@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynabatch"
+description = "PyTorch DataLoader with dynamic batch sizing guided by a pre-trained GPU memory classifier."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Bendang" }]
+dynamic = ["version"]
+dependencies = [
+    "torch",
+    "scikit-learn",
+    "numpy",
+    "pandas",
+]
+
+[project.urls]
+Repository = "https://github.com/bendangnuksung/dynabatch"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dynabatch*"]
+
+[tool.setuptools.package-data]
+dynabatch = ["models/*.pkl"]
+
+[tool.setuptools.dynamic]
+version = { attr = "dynabatch.__version__" }
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["dynabatch"]

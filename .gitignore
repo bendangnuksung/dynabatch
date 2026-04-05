@@ -1,0 +1,5 @@
+# setuptools / build
+*.egg-info/
+dist/
+build/
+dynabatch.egg-info/
