@@ -1,3 +1,4 @@
+import concurrent.futures
 import os
 import pickle
 import random
@@ -11,6 +12,10 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 # Avoid a hard dependency on transformers just for the type hint.
 PreTrainedTokenizerBase = Any
+
+# Prevent deadlocks with Hugging Face tokenizers
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 _CLASSIFIER_PATH = os.path.join(os.path.dirname(__file__), "models", "classifier.pkl")
 with open(_CLASSIFIER_PATH, "rb") as _f:
@@ -129,6 +134,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         baseline_max_token_len = sorted_lengths[0]
         baseline_total_tokens = sum(sorted_lengths[: self.min_batch_size])
         baseline_total_paddings = (baseline_max_token_len * self.min_batch_size) - baseline_total_tokens
+        baseline_total_paddings = max(baseline_total_paddings, 1)  # avoid zero-padding
 
         remaining_lengths = sorted_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
@@ -194,21 +200,32 @@ def _collate_fn(
     return tokens
 
 
-def compute_sequence_lengths(
-    texts: list[str],
-    tokenizer: PreTrainedTokenizerBase,
-    max_length: int,
-) -> list[int]:
-    """Tokenizes ``texts`` and returns the token length of each sequence."""
-    encodings = tokenizer(texts, truncation=True, max_length=max_length, padding=False)
+def _tokenize_chunk(chunk: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int) -> list[int]:
+    """Helper function to tokenize a single chunk."""
+    encodings = tokenizer(chunk, truncation=True, max_length=max_length, padding=False)
     return [len(ids) for ids in encodings["input_ids"]]
+
+
+def compute_sequence_lengths(
+    texts: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int, chunk_size: int = 500, max_workers: int = 4
+) -> list[int]:
+    """Tokenizes texts in parallel chunks to save memory and speed up processing."""
+    chunks = [texts[i : i + chunk_size] for i in range(0, len(texts), chunk_size)]
+    sequence_lengths = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_tokenize_chunk, chunk, tokenizer, max_length) for chunk in chunks]
+        for future in futures:
+            sequence_lengths.extend(future.result())
+
+    return sequence_lengths
 
 
 def build_dynamic_batch_dataloader(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
-    max_input_token_length: int,
+    max_input_token_length: int = 256,
     threshold: float = 0.025,
     shuffle: bool = False,
     num_workers: int = 4,
