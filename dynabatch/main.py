@@ -194,7 +194,7 @@ def _collate_fn(
     return tokens
 
 
-def _compute_sequence_lengths(
+def compute_sequence_lengths(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     max_length: int,
@@ -270,7 +270,7 @@ def build_dynamic_batch_dataloader(
         A DataLoader yielding dicts with keys ``input_ids``, ``attention_mask``,
         ``texts`` (and any other keys your tokenizer returns), as PyTorch tensors.
     """
-    sequence_lengths = _compute_sequence_lengths(texts, tokenizer, max_input_token_length)
+    sequence_lengths = compute_sequence_lengths(texts, tokenizer, max_input_token_length)
 
     sampler = MaxTokenBatchSampler(
         sequence_lengths=sequence_lengths,
