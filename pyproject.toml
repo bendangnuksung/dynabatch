@@ -20,9 +20,8 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/bendangnuksung/dynabatch"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["dynabatch*"]
+[tool.setuptools]
+packages = ["dynabatch"]
 
 [tool.setuptools.package-data]
 dynabatch = ["models/*.pkl"]
