@@ -206,6 +206,7 @@ class TextDataset(Dataset):
 def _collate_fn(
     batch: list[dict],
     tokenizer: PreTrainedTokenizerBase,
+    max_length: int,
     **tokenizer_kwargs: Any,
 ) -> dict[str, torch.Tensor]:
     """Pads only to the longest sequence *in this batch*, not globally."""
@@ -214,6 +215,7 @@ def _collate_fn(
         texts,
         padding=True,
         truncation=True,
+        max_length=max_length,
         return_tensors="pt",
         **tokenizer_kwargs,
     )
@@ -341,6 +343,6 @@ def build_dynamic_batch_dataloader(
     return DataLoader(
         dataset,
         batch_sampler=sampler,
-        collate_fn=partial(_collate_fn, tokenizer=tokenizer, **tokenizer_kwargs),
+        collate_fn=partial(_collate_fn, tokenizer=tokenizer, max_length=max_input_token_length, **tokenizer_kwargs),
         num_workers=num_workers,
     )
