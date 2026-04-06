@@ -103,6 +103,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         batch_start_range: float = 1.0,
         batch_end_range: float = 6.0,
         steps: int = 50,
+        shuffle_seed: int = 21,
+        shuffle_keep_first_n: int = 5,
     ):
         sorted_indices = sorted(
             range(len(sequence_lengths)),
@@ -115,6 +117,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.batch_start_range = batch_start_range
         self.batch_end_range = batch_end_range
         self.steps = steps
+        self.shuffle_seed = shuffle_seed
+        self.shuffle_keep_first_n = shuffle_keep_first_n
         self.batches = self._build_batches(sorted_indices, sequence_lengths, shuffle)
 
     def _build_batches(
@@ -123,6 +127,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         lengths: list[int],
         shuffle: bool,
     ) -> list[list[int]]:
+        random.seed(self.shuffle_seed)
         sorted_lengths = [lengths[i] for i in sorted_indices]
 
         # The first batch always contains the longest sequences and uses the
@@ -139,9 +144,13 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         remaining_lengths = sorted_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
 
+        # 512 is the max input and 64 is the min input because the classifier was trained on these values
+        max_input_length = min(self.max_input_length, 512)
+        max_input_length = max(max_input_length, 64)
+
         while remaining_lengths:
             optimal_size = _select_optimal_batch_size(
-                max_input_length=self.max_input_length,
+                max_input_length=max_input_length,
                 sequence_lengths=remaining_lengths,
                 baseline_max_token_len=baseline_max_token_len,
                 baseline_batch_size=self.min_batch_size,
@@ -154,13 +163,18 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
             )
 
             batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
+            if shuffle:
+                random.shuffle(batch_indices)
             batches.append(batch_indices)
 
             remaining_lengths = remaining_lengths[optimal_size:]
             next_start_idx += optimal_size
 
-        if shuffle:
-            random.shuffle(batches)
+        if shuffle and len(batches) > self.shuffle_keep_first_n:
+            first_half = batches[:self.shuffle_keep_first_n]
+            second_half = batches[self.shuffle_keep_first_n:]
+            random.shuffle(second_half)
+            batches = first_half + second_half
 
         return batches
 
@@ -228,6 +242,8 @@ def build_dynamic_batch_dataloader(
     max_input_token_length: int = 256,
     threshold: float = 0.025,
     shuffle: bool = False,
+    shuffle_seed: int = 21,
+    shuffle_keep_first_n: int = 3,
     num_workers: int = 4,
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
@@ -271,6 +287,11 @@ def build_dynamic_batch_dataloader(
                                 probability of exceeding 90% GPU utilisation.
         shuffle:                If True, shuffle the order of the pre-built batches.
                                 Sequences within each batch remain length-similar.
+        shuffle_seed:           Seed for the random number generator used to shuffle
+                                the batches.
+        shuffle_keep_first_n:   Number of batches to keep in the original order.
+                                This is to ensure during the training/inference
+                                that the first few batches fits into the memory.
         num_workers:            Number of parallel data-loading workers. Safe to set
                                 above 0 since the collate function is picklable.
         batch_start_range:      Lower bound of the batch-size multiplier range
@@ -298,6 +319,8 @@ def build_dynamic_batch_dataloader(
         batch_start_range=batch_start_range,
         batch_end_range=batch_end_range,
         steps=steps,
+        shuffle_seed=shuffle_seed,
+        shuffle_keep_first_n=shuffle_keep_first_n,
     )
 
     dataset = TextDataset(texts)
