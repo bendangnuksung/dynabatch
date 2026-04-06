@@ -1,4 +1,5 @@
 import gc
+import math
 import traceback
 
 import torch
@@ -75,3 +76,19 @@ def merge_outputs(outputs: list[torch.Tensor]) -> torch.Tensor | None:
         padded_outputs.append(o)
 
     return torch.cat(padded_outputs, dim=0)
+
+
+def get_hardware_friendly_batch_size(target_size: int) -> int:
+    """
+    Returns the largest number <= target_size that is either
+    a power of 2 (2^n) or 3 times a power of 2 (3 * 2^m).
+    """
+    if target_size < 1:
+        raise ValueError("Batch size must be at least 1.")
+
+    max_power_of_2 = 2 ** int(math.log2(target_size))
+    max_3_times_power_of_2 = 0
+    if target_size >= 3:
+        max_3_times_power_of_2 = 3 * (2 ** int(math.log2(target_size / 3)))
+
+    return max(max_power_of_2, max_3_times_power_of_2)

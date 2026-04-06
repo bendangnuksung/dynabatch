@@ -10,6 +10,8 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 
+from dynabatch.utils import get_hardware_friendly_batch_size
+
 # Avoid a hard dependency on transformers just for the type hint.
 PreTrainedTokenizerBase = Any
 
@@ -105,6 +107,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         steps: int = 50,
         shuffle_seed: int = 21,
         shuffle_keep_first_n: int = 5,
+        friendly_batch_size: bool = False,
     ):
         sorted_indices = sorted(
             range(len(sequence_lengths)),
@@ -119,6 +122,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.steps = steps
         self.shuffle_seed = shuffle_seed
         self.shuffle_keep_first_n = shuffle_keep_first_n
+        self.friendly_batch_size = friendly_batch_size
+
         self.batches = self._build_batches(sorted_indices, sequence_lengths, shuffle)
 
     def _build_batches(
@@ -161,6 +166,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 batch_end_range=self.batch_end_range,
                 steps=self.steps,
             )
+            if self.friendly_batch_size:
+                optimal_size = get_hardware_friendly_batch_size(optimal_size)
 
             batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
             if shuffle:
@@ -244,6 +251,7 @@ def build_dynamic_batch_dataloader(
     shuffle: bool = False,
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
+    friendly_batch_size: bool = False,
     num_workers: int = 4,
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
@@ -292,12 +300,15 @@ def build_dynamic_batch_dataloader(
         shuffle_keep_first_n:   Number of batches to keep in the original order.
                                 This is to ensure during the training/inference
                                 that the first few batches fits into the memory.
+        friendly_batch_size:    If True, use the hardware-friendly batch size.
+                                This is to ensure that the batch size is a power of 2
+                                or 3 times a power of 2. Good for training.
         num_workers:            Number of parallel data-loading workers. Safe to set
                                 above 0 since the collate function is picklable.
         batch_start_range:      Lower bound of the batch-size multiplier range
-                                relative to ``batch_size``. Default 1.0 (1×).
+                                relative to ``batch_size``. Default 1.0 (1x).
         batch_end_range:        Upper bound of the batch-size multiplier range
-                                relative to ``batch_size``. Default 6.0 (6×).
+                                relative to ``batch_size``. Default 6.0 (6x).
         steps:                  Number of candidate batch sizes to evaluate between
                                 ``batch_start_range`` and ``batch_end_range``.
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
@@ -321,6 +332,7 @@ def build_dynamic_batch_dataloader(
         steps=steps,
         shuffle_seed=shuffle_seed,
         shuffle_keep_first_n=shuffle_keep_first_n,
+        friendly_batch_size=friendly_batch_size,
     )
 
     dataset = TextDataset(texts)
