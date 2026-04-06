@@ -5,7 +5,6 @@ import torch
 
 from dynabatch.utils import clear_gpu_memory, merge_outputs, split_batch
 
-
 # ---------------------------------------------------------------------------
 # split_batch
 # ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ import torch.nn as nn
 from dynabatch import build_dynamic_batch_dataloader
 from dynabatch.utils import merge_outputs, split_batch
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -39,8 +38,8 @@ class _SimpleModel(nn.Module):
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         # input_ids: (B, T)
         embedded = self.embedding(input_ids)  # (B, T, embed_dim)
-        pooled = embedded.mean(dim=1)          # (B, embed_dim)
-        return self.fc(pooled)                 # (B, output_dim)
+        pooled = embedded.mean(dim=1)  # (B, embed_dim)
+        return self.fc(pooled)  # (B, output_dim)
 
 
 def _build_loader(sample_texts, mock_tokenizer, shuffle=False):

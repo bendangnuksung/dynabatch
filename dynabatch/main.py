@@ -171,8 +171,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
             next_start_idx += optimal_size
 
         if shuffle and len(batches) > self.shuffle_keep_first_n:
-            first_half = batches[:self.shuffle_keep_first_n]
-            second_half = batches[self.shuffle_keep_first_n:]
+            first_half = batches[: self.shuffle_keep_first_n]
+            second_half = batches[self.shuffle_keep_first_n :]
             random.shuffle(second_half)
             batches = first_half + second_half
 

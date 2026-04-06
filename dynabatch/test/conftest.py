@@ -1,12 +1,12 @@
+import random
 from pathlib import Path
 
 import pytest
 import torch
-import random
-
 
 _DATA_DIR = Path(__file__).parent / "data"
 random.seed(21)
+
 
 @pytest.fixture(scope="session")
 def sample_texts(sample_size: int = 1000):
@@ -42,12 +42,8 @@ class MockTokenizer:
 
         if padding:
             max_len = max((len(ids) for ids in token_ids), default=0)
-            attention_masks = [
-                [1] * len(ids) + [0] * (max_len - len(ids)) for ids in token_ids
-            ]
-            token_ids = [
-                ids + [0] * (max_len - len(ids)) for ids in token_ids
-            ]
+            attention_masks = [[1] * len(ids) + [0] * (max_len - len(ids)) for ids in token_ids]
+            token_ids = [ids + [0] * (max_len - len(ids)) for ids in token_ids]
         else:
             attention_masks = [[1] * len(ids) for ids in token_ids]
 

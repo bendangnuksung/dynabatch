@@ -11,7 +11,6 @@ from dynabatch.main import (
     compute_sequence_lengths,
 )
 
-
 # ---------------------------------------------------------------------------
 # TextDataset
 # ---------------------------------------------------------------------------
@@ -103,9 +102,7 @@ _SEQ_LENGTHS = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
 _BASELINE_BS = 2
 _BASELINE_MAX_TOKEN = _SEQ_LENGTHS[0]
 _BASELINE_TOTAL_TOKENS = sum(_SEQ_LENGTHS[:_BASELINE_BS])
-_BASELINE_TOTAL_PADDINGS = max(
-    _BASELINE_MAX_TOKEN * _BASELINE_BS - _BASELINE_TOTAL_TOKENS, 1
-)
+_BASELINE_TOTAL_PADDINGS = max(_BASELINE_MAX_TOKEN * _BASELINE_BS - _BASELINE_TOTAL_TOKENS, 1)
 
 
 def test_select_optimal_batch_size_returns_int():
