@@ -61,9 +61,9 @@ def _select_optimal_batch_size(
         "total_tokens_x": [baseline_total_tokens] * steps,
         "total_tokens_y": [],
         "total_token_size_diff": [],
-        "paddings_x": [baseline_total_paddings] * steps,
+        # "paddings_x": [baseline_total_paddings] * steps,
         "paddings_y": [],
-        "total_paddings_diff": [],
+        # "total_paddings_diff": [],
     }
 
     for batch_size in candidate_batch_sizes:
@@ -78,8 +78,8 @@ def _select_optimal_batch_size(
         features["batch_size_diff"].append(batch_size / baseline_batch_size)
         features["total_tokens_y"].append(total_tokens)
         features["total_token_size_diff"].append(total_tokens / baseline_total_tokens)
-        features["paddings_y"].append(total_paddings)
-        features["total_paddings_diff"].append(total_paddings / baseline_total_paddings)
+        # features["paddings_y"].append(total_paddings)
+        # features["total_paddings_diff"].append(total_paddings / baseline_total_paddings)
 
     feature_df = pd.DataFrame(features)
     feature_df = feature_df[_CLASSIFIER.feature_names_in_]
