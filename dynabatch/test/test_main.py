@@ -69,14 +69,16 @@ def test_collate_fn_tensor_shapes(sample_texts, mock_tokenizer):
 
 def test_tokenize_chunk_returns_lengths(sample_texts, mock_tokenizer):
     chunk = sample_texts[:3]
-    lengths = _tokenize_chunk(chunk, tokenizer=mock_tokenizer, max_length=128)
+    lengths: list[int] = []
+    for t in chunk:
+        lengths.extend(_tokenize_chunk(t, tokenizer=mock_tokenizer, max_length=128))
     assert len(lengths) == 3
     assert all(isinstance(l, int) and l > 0 for l in lengths)
 
 
 def test_tokenize_chunk_truncation(mock_tokenizer):
-    texts = ["word " * 20]  # 20 tokens
-    lengths = _tokenize_chunk(texts, tokenizer=mock_tokenizer, max_length=5)
+    text = "word " * 20  # 20 tokens
+    lengths = _tokenize_chunk(text, tokenizer=mock_tokenizer, max_length=5)
     assert lengths[0] <= 5
 
 

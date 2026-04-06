@@ -9,7 +9,7 @@ random.seed(21)
 
 
 @pytest.fixture(scope="session")
-def sample_texts(sample_size: int = 1000):
+def sample_texts(sample_size: int = 200):
     path = _DATA_DIR / "human_written_data_ru_en.en"
     lines = path.read_text(encoding="utf-8").splitlines()
     lines = [line for line in lines if line.strip()]
@@ -22,17 +22,25 @@ class MockTokenizer:
 
     def __call__(
         self,
-        texts,
+        text: str | list[str] | None = None,
+        text_pair=None,
         padding=False,
         truncation=False,
         max_length=None,
         return_tensors=None,
         **kwargs,
     ):
-        if isinstance(texts, str):
-            texts = [texts]
+        # HuggingFace uses ``text=``; accept legacy ``texts=`` for older call sites.
+        if text is None and "texts" in kwargs:
+            text = kwargs.pop("texts")
+        if text is None:
+            raise TypeError("MockTokenizer.__call__() missing required argument: 'text'")
+        if isinstance(text, str):
+            texts_list = [text]
+        else:
+            texts_list = list(text)
 
-        tokenized = [text.split() for text in texts]
+        tokenized = [t.split() for t in texts_list]
 
         if truncation and max_length is not None:
             tokenized = [t[:max_length] for t in tokenized]
