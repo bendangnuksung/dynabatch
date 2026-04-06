@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from dynabatch.utils import clear_gpu_memory, merge_outputs, split_batch
+from dynabatch.utils import clear_gpu_memory, get_hardware_friendly_batch_size, merge_outputs, split_batch
 
 # ---------------------------------------------------------------------------
 # split_batch
@@ -109,3 +109,64 @@ def test_clear_gpu_memory_no_tensors():
     with patch("torch.cuda.empty_cache") as mock_cache:
         clear_gpu_memory(fake_oom)
         mock_cache.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get_hardware_friendly_batch_size
+# ---------------------------------------------------------------------------
+
+
+def _is_power_of_2(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _is_docstring_friendly(n: int) -> bool:
+    """Matches the docstring: 2^n or 3 * 2^m."""
+    if n < 1:
+        return False
+    if _is_power_of_2(n):
+        return True
+    if n % 3 != 0:
+        return False
+    m = n // 3
+    return _is_power_of_2(m)
+
+
+def _max_friendly_at_most(target: int) -> int:
+    return max(x for x in range(1, target + 1) if _is_docstring_friendly(x))
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 4),
+        (6, 6),
+        (7, 6),
+        (8, 8),
+        (9, 8),
+        (12, 12),
+        (13, 12),
+        (24, 24),
+        (25, 24),
+        (48, 48),
+        (100, 96),
+    ],
+)
+def test_get_hardware_friendly_batch_size_examples(target, expected):
+    assert get_hardware_friendly_batch_size(target) == expected
+
+
+@pytest.mark.parametrize("target", range(1, 513))
+def test_get_hardware_friendly_batch_size_matches_bruteforce_max(target):
+    assert get_hardware_friendly_batch_size(target) == _max_friendly_at_most(target)
+
+
+def test_get_hardware_friendly_batch_size_rejects_non_positive():
+    with pytest.raises(ValueError, match="at least 1"):
+        get_hardware_friendly_batch_size(0)
+    with pytest.raises(ValueError, match="at least 1"):
+        get_hardware_friendly_batch_size(-1)
