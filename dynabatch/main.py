@@ -62,17 +62,17 @@ def _select_optimal_batch_size(
         "total_tokens_y": [],
         "total_token_size_diff": [],
         # "paddings_x": [baseline_total_paddings] * steps,
-        "paddings_y": [],
+        # "paddings_y": [],
         # "total_paddings_diff": [],
     }
 
     for batch_size in candidate_batch_sizes:
         total_tokens = sum(sequence_lengths[:batch_size])
-        total_paddings = (sequence_lengths[0] * batch_size) - total_tokens
-        if total_paddings == 0:
-            # The classifier was never trained on zero-padding batches and
-            # produces unreliable predictions, so inject a small synthetic value.
-            total_paddings = random.randint(1, 10)
+        # total_paddings = (sequence_lengths[0] * batch_size) - total_tokens
+        # if total_paddings == 0:
+        # The classifier was never trained on zero-padding batches and
+        # produces unreliable predictions, so inject a small synthetic value.
+        # total_paddings = random.randint(1, 10)
 
         features["batch_size_y"].append(batch_size)
         features["batch_size_diff"].append(batch_size / baseline_batch_size)
