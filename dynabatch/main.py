@@ -212,7 +212,7 @@ def _collate_fn(
     """Pads only to the longest sequence *in this batch*, not globally."""
     texts = [item["text"] for item in batch]
     tokens = tokenizer(
-        texts,
+        text=texts,
         padding=True,
         truncation=True,
         max_length=max_length,
@@ -223,21 +223,20 @@ def _collate_fn(
     return tokens
 
 
-def _tokenize_chunk(chunk: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int) -> list[int]:
+def _tokenize_chunk(text: str, tokenizer: PreTrainedTokenizerBase, max_length: int) -> list[int]:
     """Helper function to tokenize a single chunk."""
-    encodings = tokenizer(chunk, truncation=True, max_length=max_length, padding=False)
-    return [len(ids) for ids in encodings["input_ids"]]
+    encodings = tokenizer(text=[text], truncation=True, max_length=max_length, padding=False)
+    return [len(encodings["input_ids"][0])]
 
 
 def compute_sequence_lengths(
-    texts: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int, chunk_size: int = 500, max_workers: int = 4
+    texts: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int, max_workers: int = 4
 ) -> list[int]:
     """Tokenizes texts in parallel chunks to save memory and speed up processing."""
-    chunks = [texts[i : i + chunk_size] for i in range(0, len(texts), chunk_size)]
     sequence_lengths = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_tokenize_chunk, chunk, tokenizer, max_length) for chunk in chunks]
+        futures = [executor.submit(_tokenize_chunk, text, tokenizer, max_length) for text in texts]
         for future in futures:
             sequence_lengths.extend(future.result())
 
@@ -321,7 +320,9 @@ def build_dynamic_batch_dataloader(
         A DataLoader yielding dicts with keys ``input_ids``, ``attention_mask``,
         ``texts`` (and any other keys your tokenizer returns), as PyTorch tensors.
     """
-    sequence_lengths = compute_sequence_lengths(texts, tokenizer, max_input_token_length)
+    if not num_workers:
+        num_workers = os.cpu_count() or 1
+    sequence_lengths = compute_sequence_lengths(texts, tokenizer, max_input_token_length, max_workers=num_workers)
 
     sampler = MaxTokenBatchSampler(
         sequence_lengths=sequence_lengths,
@@ -338,7 +339,6 @@ def build_dynamic_batch_dataloader(
     )
 
     dataset = TextDataset(texts)
-    num_workers = min(num_workers, os.cpu_count() or 1)
 
     return DataLoader(
         dataset,
