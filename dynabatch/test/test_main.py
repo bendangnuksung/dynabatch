@@ -33,19 +33,22 @@ def test_text_dataset_getitem(sample_texts):
 # _collate_fn
 # ---------------------------------------------------------------------------
 
+_COLLATE_MAX_LENGTH = 128
+
 
 def test_collate_fn_keys(sample_texts, mock_tokenizer):
     batch = [{"text": t} for t in sample_texts[:3]]
-    result = _collate_fn(batch, tokenizer=mock_tokenizer)
+    result = _collate_fn(batch, tokenizer=mock_tokenizer, max_length=_COLLATE_MAX_LENGTH)
     assert "input_ids" in result
     assert "attention_mask" in result
     assert "texts" in result
+    assert isinstance(result["texts"], list)
 
 
 def test_collate_fn_texts_preserved(sample_texts, mock_tokenizer):
     subset = sample_texts[:3]
     batch = [{"text": t} for t in subset]
-    result = _collate_fn(batch, tokenizer=mock_tokenizer)
+    result = _collate_fn(batch, tokenizer=mock_tokenizer, max_length=_COLLATE_MAX_LENGTH)
     assert result["texts"] == subset
 
 
@@ -53,7 +56,7 @@ def test_collate_fn_tensor_shapes(sample_texts, mock_tokenizer):
     import torch
 
     batch = [{"text": t} for t in sample_texts[:3]]
-    result = _collate_fn(batch, tokenizer=mock_tokenizer)
+    result = _collate_fn(batch, tokenizer=mock_tokenizer, max_length=_COLLATE_MAX_LENGTH)
     assert result["input_ids"].shape[0] == 3
     assert result["attention_mask"].shape[0] == 3
     assert result["input_ids"].dtype == torch.long
