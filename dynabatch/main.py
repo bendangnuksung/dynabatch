@@ -28,9 +28,10 @@ def _select_optimal_batch_size(
     max_input_length: int,
     sequence_lengths: list[int],
     baseline_max_token_len: int,
+    baseline_max_word_len: int,
+    baseline_max_char_len: int,
     baseline_batch_size: int,
     baseline_total_tokens: int,
-    baseline_total_paddings: int,
     threshold: float = 0.025,
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
@@ -52,34 +53,75 @@ def _select_optimal_batch_size(
 
     features: dict[str, list] = {
         "max_input_length": [max_input_length] * steps,
-        "token_size_x": [baseline_max_token_len] * steps,
-        "token_size_y": [sequence_lengths[0]] * steps,
-        "token_size_diff": [sequence_lengths[0] / baseline_max_token_len] * steps,
+        "token_size_x": [baseline_max_token_len.item()] * steps,
+        "token_size_y": [sequence_lengths[0][0].item()] * steps,
+        "token_size_diff": [sequence_lengths[0][0].item() / baseline_max_token_len.item()] * steps,
         "batch_size_x": [baseline_batch_size] * steps,
         "batch_size_y": [],
         "batch_size_diff": [],
         "total_tokens_x": [baseline_total_tokens] * steps,
         "total_tokens_y": [],
         "total_token_size_diff": [],
-        # "paddings_x": [baseline_total_paddings] * steps,
-        # "paddings_y": [],
-        # "total_paddings_diff": [],
+        "word_length_x": [baseline_max_word_len.item()] * steps,
+        "char_length_x": [baseline_max_char_len.item()] * steps,
+        "word_length_y": [],
+        "char_length_y": [],
+        "token_mean_y": [],
+        "token_std_y": [],
+        "token_min_y": [],
+        "token_median_y": [],
+        "token_mode_y": [],
+        "word_mean_y": [],
+        "word_std_y": [],
+        "word_min_y": [],
+        "word_median_y": [],
+        "word_mode_y": [],
+        "word_sum_y": [],
+        "word_max_y": [],
+        "char_mean_y": [],
+        "char_std_y": [],
+        "char_min_y": [],
+        "char_median_y": [],
+        "char_mode_y": [],
+        "char_sum_y": [],
+        "char_max_y": [],
     }
 
     for batch_size in candidate_batch_sizes:
-        total_tokens = sum(sequence_lengths[:batch_size])
-        # total_paddings = (sequence_lengths[0] * batch_size) - total_tokens
-        # if total_paddings == 0:
-        # The classifier was never trained on zero-padding batches and
-        # produces unreliable predictions, so inject a small synthetic value.
-        # total_paddings = random.randint(1, 10)
+        token_lengths = sequence_lengths[:batch_size, 0]
+        word_lengths = sequence_lengths[:batch_size, 1]
+        char_lengths = sequence_lengths[:batch_size, 2]
+        total_tokens = token_lengths.sum().item()
 
-        features["batch_size_y"].append(batch_size)
-        features["batch_size_diff"].append(batch_size / baseline_batch_size)
+        features["batch_size_y"].append(batch_size.item())
+        features["batch_size_diff"].append(batch_size.item() / baseline_batch_size)
         features["total_tokens_y"].append(total_tokens)
-        features["total_token_size_diff"].append(total_tokens / baseline_total_tokens)
-        # features["paddings_y"].append(total_paddings)
-        # features["total_paddings_diff"].append(total_paddings / baseline_total_paddings)
+        features["total_token_size_diff"].append(total_tokens / baseline_total_tokens.item())
+
+        features["token_mean_y"].append(token_lengths.mean().item())
+        features["token_std_y"].append(token_lengths.std().item())
+        features["token_min_y"].append(token_lengths.min().item())
+        features["token_median_y"].append(np.median(token_lengths).item())
+        features["token_mode_y"].append(np.bincount(token_lengths).argmax().item())
+
+        features["word_mean_y"].append(word_lengths.mean().item())
+        features["word_std_y"].append(word_lengths.std().item())
+        features["word_min_y"].append(word_lengths.min().item())
+        features["word_median_y"].append(np.median(word_lengths).item())
+        features["word_mode_y"].append(np.bincount(word_lengths).argmax().item())
+        features["word_sum_y"].append(word_lengths.sum().item())
+        features["word_max_y"].append(word_lengths.max().item())
+
+        features["char_mean_y"].append(char_lengths.mean().item())
+        features["char_std_y"].append(char_lengths.std().item())
+        features["char_min_y"].append(char_lengths.min().item())
+        features["char_median_y"].append(np.median(char_lengths).item())
+        features["char_mode_y"].append(np.bincount(char_lengths).argmax().item())
+        features["char_sum_y"].append(char_lengths.sum().item())
+        features["char_max_y"].append(char_lengths.max().item())
+
+        features["word_length_y"].append(word_lengths.max().item())
+        features["char_length_y"].append(char_lengths.max().item())
 
     feature_df = pd.DataFrame(features)
     feature_df = feature_df[_CLASSIFIER.feature_names_in_]
@@ -97,7 +139,7 @@ def _select_optimal_batch_size(
 class MaxTokenBatchSampler(Sampler[list[int]]):
     def __init__(
         self,
-        sequence_lengths: list[int],
+        sequence_lengths: list[tuple[int, int, int]],
         max_input_length: int,
         min_batch_size: int,
         shuffle: bool = False,
@@ -111,7 +153,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
     ):
         sorted_indices = sorted(
             range(len(sequence_lengths)),
-            key=lambda i: sequence_lengths[i],
+            key=lambda i: sequence_lengths[i][0],
             reverse=True,
         )
         self.min_batch_size = min_batch_size
@@ -133,18 +175,23 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle: bool,
     ) -> list[list[int]]:
         random.seed(self.shuffle_seed)
-        sorted_lengths = [lengths[i] for i in sorted_indices]
+
+        lengths = np.array(lengths)
+        sorted_lengths = lengths[sorted_indices]
+        sorted_token_lengths = sorted_lengths[:, 0]
+        sorted_word_lengths = sorted_lengths[:, 1]
+        sorted_char_lengths = sorted_lengths[:, 2]
 
         # The first batch always contains the longest sequences and uses the
         # minimum batch size — this is the hardest batch and the baseline for
         # all subsequent classifier predictions.
-        baseline_batch_indices = [sorted_indices[i] for i in range(self.min_batch_size)]
-        batches: list[list[int]] = [baseline_batch_indices]
+        baseline_batch_indices = sorted_indices[: self.min_batch_size]
+        batches = [baseline_batch_indices]
 
-        baseline_max_token_len = sorted_lengths[0]
-        baseline_total_tokens = sum(sorted_lengths[: self.min_batch_size])
-        baseline_total_paddings = (baseline_max_token_len * self.min_batch_size) - baseline_total_tokens
-        baseline_total_paddings = max(baseline_total_paddings, 1)  # avoid zero-padding
+        baseline_max_token_len = sorted_token_lengths[0]
+        baseline_max_word_len = sorted_word_lengths[0]
+        baseline_max_char_len = sorted_char_lengths[0]
+        baseline_total_tokens = sorted_token_lengths[: self.min_batch_size].sum()
 
         remaining_lengths = sorted_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
@@ -153,14 +200,15 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         max_input_length = min(self.max_input_length, 512)
         max_input_length = max(max_input_length, 64)
 
-        while remaining_lengths:
+        while len(remaining_lengths):
             optimal_size = _select_optimal_batch_size(
                 max_input_length=max_input_length,
                 sequence_lengths=remaining_lengths,
                 baseline_max_token_len=baseline_max_token_len,
+                baseline_max_word_len=baseline_max_word_len,
+                baseline_max_char_len=baseline_max_char_len,
                 baseline_batch_size=self.min_batch_size,
                 baseline_total_tokens=baseline_total_tokens,
-                baseline_total_paddings=baseline_total_paddings,
                 threshold=self.threshold,
                 batch_start_range=self.batch_start_range,
                 batch_end_range=self.batch_end_range,
@@ -223,24 +271,24 @@ def _collate_fn(
     return tokens
 
 
-def _tokenize_chunk(text: str, tokenizer: PreTrainedTokenizerBase, max_length: int) -> list[int]:
-    """Helper function to tokenize a single chunk."""
+def _tokenize_chunk(text: str, tokenizer: PreTrainedTokenizerBase, max_length: int) -> list[tuple[int, int, int]]:
+    """Tokenizing a single text so that no padding is applied and get the correct token lengths"""
     encodings = tokenizer(text=[text], truncation=True, max_length=max_length, padding=False)
-    return [len(encodings["input_ids"][0])]
+    word_length = len(text.split())
+    char_length = len(text)
+    return [(len(encodings["input_ids"][0]), word_length, char_length)]
 
 
-def compute_sequence_lengths(
+def compute_lengths(
     texts: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int, max_workers: int = 4
-) -> list[int]:
+) -> list[tuple[int, int, int]]:
     """Tokenizes texts in parallel chunks to save memory and speed up processing."""
-    sequence_lengths = []
-
+    results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(_tokenize_chunk, text, tokenizer, max_length) for text in texts]
         for future in futures:
-            sequence_lengths.extend(future.result())
-
-    return sequence_lengths
+            results.extend(future.result())
+    return results
 
 
 def build_dynamic_batch_dataloader(
@@ -257,6 +305,7 @@ def build_dynamic_batch_dataloader(
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
     steps: int = 50,
+    debug: bool = False,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
     """
@@ -312,6 +361,8 @@ def build_dynamic_batch_dataloader(
                                 relative to ``batch_size``. Default 6.0 (6x).
         steps:                  Number of candidate batch sizes to evaluate between
                                 ``batch_start_range`` and ``batch_end_range``.
+        debug:                  If True, return a DataLoader without parallel workers.
+                                Parallel workers makes hard to debug. Only use for debugging.
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
                                 during collation (e.g. ``max_length``,
                                 ``add_special_tokens``).
@@ -320,9 +371,12 @@ def build_dynamic_batch_dataloader(
         A DataLoader yielding dicts with keys ``input_ids``, ``attention_mask``,
         ``texts`` (and any other keys your tokenizer returns), as PyTorch tensors.
     """
-    if not num_workers:
+    if debug:
+        num_workers = 0
+    elif not num_workers:
         num_workers = os.cpu_count() or 1
-    sequence_lengths = compute_sequence_lengths(texts, tokenizer, max_input_token_length, max_workers=num_workers)
+
+    sequence_lengths = compute_lengths(texts, tokenizer, max_input_token_length, max_workers=num_workers)
 
     sampler = MaxTokenBatchSampler(
         sequence_lengths=sequence_lengths,
@@ -339,6 +393,13 @@ def build_dynamic_batch_dataloader(
     )
 
     dataset = TextDataset(texts)
+
+    if debug:
+        return DataLoader(
+            dataset,
+            batch_sampler=sampler,
+            collate_fn=partial(_collate_fn, tokenizer=tokenizer, max_length=max_input_token_length, **tokenizer_kwargs),
+        )
 
     return DataLoader(
         dataset,

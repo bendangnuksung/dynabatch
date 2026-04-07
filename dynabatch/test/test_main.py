@@ -1,5 +1,6 @@
 """Tests for dynabatch/main.py internals and public components."""
 
+import numpy as np
 import pytest
 
 from dynabatch.main import (
@@ -8,7 +9,7 @@ from dynabatch.main import (
     _collate_fn,
     _select_optimal_batch_size,
     _tokenize_chunk,
-    compute_sequence_lengths,
+    compute_lengths,
 )
 
 # ---------------------------------------------------------------------------
@@ -63,51 +64,59 @@ def test_collate_fn_tensor_shapes(sample_texts, mock_tokenizer):
 
 
 # ---------------------------------------------------------------------------
-# _tokenize_chunk / compute_sequence_lengths
+# _tokenize_chunk / compute_lengths
 # ---------------------------------------------------------------------------
 
 
 def test_tokenize_chunk_returns_lengths(sample_texts, mock_tokenizer):
     chunk = sample_texts[:3]
-    lengths: list[int] = []
+    lengths: list[tuple[int, int, int]] = []
     for t in chunk:
         lengths.extend(_tokenize_chunk(t, tokenizer=mock_tokenizer, max_length=128))
     assert len(lengths) == 3
-    assert all(isinstance(l, int) and l > 0 for l in lengths)
+    for token_len, word_len, char_len in lengths:
+        assert isinstance(token_len, int) and token_len > 0
+        assert isinstance(word_len, int) and word_len > 0
+        assert isinstance(char_len, int) and char_len > 0
 
 
 def test_tokenize_chunk_truncation(mock_tokenizer):
     text = "word " * 20  # 20 tokens
-    lengths = _tokenize_chunk(text, tokenizer=mock_tokenizer, max_length=5)
-    assert lengths[0] <= 5
+    rows = _tokenize_chunk(text, tokenizer=mock_tokenizer, max_length=5)
+    token_len, _word_len, _char_len = rows[0]
+    assert token_len <= 5
 
 
 def test_compute_sequence_lengths_count(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     assert len(lengths) == len(sample_texts)
 
 
 def test_compute_sequence_lengths_positive(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
-    assert all(l > 0 for l in lengths)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
+    for token_len, word_len, char_len in lengths:
+        assert token_len > 0 and word_len > 0 and char_len > 0
 
 
 def test_compute_sequence_lengths_bounded(sample_texts, mock_tokenizer):
     max_len = 4
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=max_len)
-    assert all(l <= max_len for l in lengths)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=max_len)
+    for token_len, _word_len, _char_len in lengths:
+        assert token_len <= max_len
 
 
 # ---------------------------------------------------------------------------
 # _select_optimal_batch_size
 # ---------------------------------------------------------------------------
 
-# Representative sorted descending sequence lengths
-_SEQ_LENGTHS = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
+# Representative sorted descending rows: (token_len, word_len, char_len)
+_TOKEN_SEQ = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
+_SEQ_LENGTHS = np.array([[t, max(1, t // 2), t * 5] for t in _TOKEN_SEQ], dtype=np.int64)
 _BASELINE_BS = 2
-_BASELINE_MAX_TOKEN = _SEQ_LENGTHS[0]
-_BASELINE_TOTAL_TOKENS = sum(_SEQ_LENGTHS[:_BASELINE_BS])
-_BASELINE_TOTAL_PADDINGS = max(_BASELINE_MAX_TOKEN * _BASELINE_BS - _BASELINE_TOTAL_TOKENS, 1)
+_BASELINE_MAX_TOKEN = np.int64(_SEQ_LENGTHS[0, 0])
+_BASELINE_MAX_WORD = np.int64(_SEQ_LENGTHS[0, 1])
+_BASELINE_MAX_CHAR = np.int64(_SEQ_LENGTHS[0, 2])
+_BASELINE_TOTAL_TOKENS = np.int64(_SEQ_LENGTHS[:_BASELINE_BS, 0].sum())
 
 
 def test_select_optimal_batch_size_returns_int():
@@ -115,9 +124,10 @@ def test_select_optimal_batch_size_returns_int():
         max_input_length=64,
         sequence_lengths=_SEQ_LENGTHS,
         baseline_max_token_len=_BASELINE_MAX_TOKEN,
+        baseline_max_word_len=_BASELINE_MAX_WORD,
+        baseline_max_char_len=_BASELINE_MAX_CHAR,
         baseline_batch_size=_BASELINE_BS,
         baseline_total_tokens=_BASELINE_TOTAL_TOKENS,
-        baseline_total_paddings=_BASELINE_TOTAL_PADDINGS,
     )
     assert isinstance(result, int)
 
@@ -127,9 +137,10 @@ def test_select_optimal_batch_size_bounded():
         max_input_length=64,
         sequence_lengths=_SEQ_LENGTHS,
         baseline_max_token_len=_BASELINE_MAX_TOKEN,
+        baseline_max_word_len=_BASELINE_MAX_WORD,
+        baseline_max_char_len=_BASELINE_MAX_CHAR,
         baseline_batch_size=_BASELINE_BS,
         baseline_total_tokens=_BASELINE_TOTAL_TOKENS,
-        baseline_total_paddings=_BASELINE_TOTAL_PADDINGS,
     )
     assert 1 <= result <= len(_SEQ_LENGTHS)
 
@@ -140,9 +151,10 @@ def test_select_optimal_batch_size_fallback_to_baseline():
         max_input_length=64,
         sequence_lengths=_SEQ_LENGTHS,
         baseline_max_token_len=_BASELINE_MAX_TOKEN,
+        baseline_max_word_len=_BASELINE_MAX_WORD,
+        baseline_max_char_len=_BASELINE_MAX_CHAR,
         baseline_batch_size=_BASELINE_BS,
         baseline_total_tokens=_BASELINE_TOTAL_TOKENS,
-        baseline_total_paddings=_BASELINE_TOTAL_PADDINGS,
         threshold=0.0,
     )
     assert result == min(_BASELINE_BS, len(_SEQ_LENGTHS))
@@ -154,9 +166,10 @@ def test_select_optimal_batch_size_permissive_threshold():
         max_input_length=64,
         sequence_lengths=_SEQ_LENGTHS,
         baseline_max_token_len=_BASELINE_MAX_TOKEN,
+        baseline_max_word_len=_BASELINE_MAX_WORD,
+        baseline_max_char_len=_BASELINE_MAX_CHAR,
         baseline_batch_size=_BASELINE_BS,
         baseline_total_tokens=_BASELINE_TOTAL_TOKENS,
-        baseline_total_paddings=_BASELINE_TOTAL_PADDINGS,
         threshold=1.0,
     )
     assert result >= _BASELINE_BS
@@ -178,7 +191,7 @@ def _make_sampler(sequence_lengths, min_batch_size=2, shuffle=False, seed=21) ->
 
 
 def test_sampler_covers_all_indices(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler = _make_sampler(lengths)
     all_indices = [idx for batch in sampler for idx in batch]
     assert sorted(all_indices) == list(range(len(sample_texts)))
@@ -186,35 +199,35 @@ def test_sampler_covers_all_indices(sample_texts, mock_tokenizer):
 
 def test_sampler_first_batch_size(sample_texts, mock_tokenizer):
     min_bs = 2
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler = _make_sampler(lengths, min_batch_size=min_bs)
     first_batch = list(sampler)[0]
     assert len(first_batch) == min_bs
 
 
 def test_sampler_len(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler = _make_sampler(lengths)
     batches = list(sampler)
     assert len(sampler) == len(batches)
 
 
 def test_sampler_no_overlap(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler = _make_sampler(lengths)
     all_indices = [idx for batch in sampler for idx in batch]
     assert len(all_indices) == len(set(all_indices)), "Indices should not repeat across batches"
 
 
 def test_sampler_shuffle_deterministic(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler_a = _make_sampler(lengths, shuffle=True, seed=42)
     sampler_b = _make_sampler(lengths, shuffle=True, seed=42)
     assert list(sampler_a) == list(sampler_b)
 
 
 def test_sampler_shuffle_vs_no_shuffle(sample_texts, mock_tokenizer):
-    lengths = compute_sequence_lengths(sample_texts, mock_tokenizer, max_length=64)
+    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
     sampler_no_shuffle = _make_sampler(lengths, shuffle=False)
 
     # shuffle_keep_first_n=0 ensures ALL batches are eligible for reordering
