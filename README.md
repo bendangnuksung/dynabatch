@@ -24,6 +24,14 @@ for batch in dataloader:
     outputs = model.generate(**batch)
 ```
 
+## 📒 Notebooks to test out
+
+| Notebooks | Links 
+|-----------|---------|
+| **Inference Comparison**      | [🟠🟡 Collab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)            
+| **Training Comparison**      | [🟠🟡 Collab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)   
+
+
 ## How It Works
 
 ### The Problem
