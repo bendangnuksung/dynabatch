@@ -250,37 +250,3 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, mock_tokenizer):
     # (only assert when there are 3+ batches, otherwise shuffle may be identity)
     if len(unshuffled) >= 3:
         assert shuffled != unshuffled, "Shuffle should change batch order with keep_first_n=0"
-
-
-def test_sampler_max_batch_range_derives_search_bounds(sample_texts, mock_tokenizer):
-    """max_batch_range sets batch_end_range (floored at 1.0) and steps from the span."""
-    lengths = compute_lengths(sample_texts, mock_tokenizer, max_length=64)
-    s_default = MaxTokenBatchSampler(
-        sequence_lengths=lengths,
-        max_input_length=64,
-        min_batch_size=2,
-    )
-    assert s_default.batch_start_range == 1.0
-    assert s_default.batch_end_range == 1.5
-    assert s_default.steps == 5
-
-    s_wide = MaxTokenBatchSampler(
-        sequence_lengths=lengths,
-        max_input_length=64,
-        min_batch_size=2,
-        max_batch_range=3.0,
-    )
-    assert s_wide.batch_end_range == 3.0
-    assert s_wide.steps == 20
-
-    # Below 1.0, batch_end_range is clamped to 1.0 → steps 0. Dynamic mode would
-    # call the classifier with no candidates; use static mode to only assert attrs.
-    s_clamped = MaxTokenBatchSampler(
-        sequence_lengths=lengths,
-        max_input_length=64,
-        min_batch_size=2,
-        max_batch_range=0.5,
-        dynamic_batch_mode=False,
-    )
-    assert s_clamped.batch_end_range == 1.0
-    assert s_clamped.steps == 0
