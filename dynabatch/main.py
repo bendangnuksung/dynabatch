@@ -36,7 +36,6 @@ def _select_optimal_batch_size(
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
     steps: int = 50,
-    max_batch_size: int | None = None,
 ) -> int:
     """
     Use the pre-trained classifier to find the largest batch size that keeps
@@ -141,8 +140,6 @@ def _select_optimal_batch_size(
     else:
         result = min(optimal_batch_size, max_allowed)
 
-    if max_batch_size is not None:
-        result = min(result, max_batch_size)
     return result
 
 
@@ -154,13 +151,10 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         min_batch_size: int,
         shuffle: bool = False,
         threshold: float = 0.025,
-        batch_start_range: float = 1.0,
-        batch_end_range: float = 6.0,
-        steps: int = 50,
+        max_batch_range: float = 1.5,
         shuffle_seed: int = 21,
         shuffle_keep_first_n: int = 5,
         friendly_batch_size: bool = False,
-        max_batch_size: int | None = None,
         dynamic_batch_mode: bool = True,
     ):
         sorted_indices = sorted(
@@ -171,15 +165,15 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.min_batch_size = min_batch_size
         self.max_input_length = max_input_length
         self.threshold = threshold
-        self.batch_start_range = batch_start_range
-        self.batch_end_range = batch_end_range
-        self.steps = steps
         self.shuffle = shuffle
         self.shuffle_seed = shuffle_seed
         self.shuffle_keep_first_n = shuffle_keep_first_n
         self.friendly_batch_size = friendly_batch_size
-        self.max_batch_size = max_batch_size
         self.dynamic_batch_mode = dynamic_batch_mode
+
+        self.batch_start_range = 1.0
+        self.batch_end_range = max(max_batch_range, 1.0)
+        self.steps = int((self.batch_end_range - self.batch_start_range) * 10)
 
         self.batches = self._build_batches(sorted_indices, sequence_lengths)
 
@@ -221,7 +215,6 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 batch_start_range=self.batch_start_range,
                 batch_end_range=self.batch_end_range,
                 steps=self.steps,
-                max_batch_size=self.max_batch_size,
             )
             if self.friendly_batch_size:
                 optimal_size = get_hardware_friendly_batch_size(optimal_size)
@@ -329,18 +322,15 @@ def build_dynamic_batch_dataloader(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
-    max_input_token_length: int = 256,
-    threshold: float = 0.025,
+    max_input_token_length: int = 512,
+    threshold: float = 0.005,
     shuffle: bool = False,
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
     friendly_batch_size: bool = False,
     num_workers: int = 4,
-    batch_start_range: float = 1.0,
-    batch_end_range: float = 6.0,
-    steps: int = 50,
+    max_batch_range: float = 1.5,
     debug: bool = False,
-    max_batch_size: int | None = None,
     dynamic_batch_mode: bool = True,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
@@ -376,8 +366,8 @@ def build_dynamic_batch_dataloader(
                                 than this are silently truncated.
         threshold:              Maximum spike probability tolerated per candidate
                                 batch size. Lower values are more conservative (fewer
-                                OOMs, slightly more padding waste). Default 0.025
-                                means only accept candidates with <2.5% predicted
+                                OOMs, slightly more padding waste). Default 0.005
+                                means only accept candidates with <0.5% predicted
                                 probability of exceeding 90% GPU utilisation.
         shuffle:                If True, shuffle the order of the pre-built batches.
                                 Sequences within each batch remain length-similar.
@@ -391,19 +381,10 @@ def build_dynamic_batch_dataloader(
                                 or 3 times a power of 2. Good for training.
         num_workers:            Number of parallel data-loading workers. Safe to set
                                 above 0 since the collate function is picklable.
-        batch_start_range:      Lower bound of the batch-size multiplier range
-                                relative to ``batch_size``. Default 1.0 (1x).
-        batch_end_range:        Upper bound of the batch-size multiplier range
-                                relative to ``batch_size``. Default 6.0 (6x).
-        steps:                  Number of candidate batch sizes to evaluate between
-                                ``batch_start_range`` and ``batch_end_range``.
+        max_batch_range:        Maximum batch-size multiplier range
+                                relative to ``batch_size``.
         debug:                  If True, return a DataLoader without parallel workers.
                                 Parallel workers makes hard to debug. Only use for debugging.
-        max_batch_size:         Hard upper bound on the batch size the classifier can
-                                suggest. Useful when the baseline ``batch_size`` is
-                                large (e.g. 304) and the default ``batch_end_range``
-                                would produce candidates far beyond what the GPU can
-                                handle. ``None`` (default) means no cap.
         dynamic_batch_mode:     If True, use the dynamic batch mode. If False, it becomes
                                 the same as Max Token Sampler/Batching with static batch size.
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
@@ -420,6 +401,7 @@ def build_dynamic_batch_dataloader(
         num_workers = os.cpu_count() or 1
 
     sequence_lengths = compute_lengths(texts, tokenizer, max_input_token_length, max_workers=num_workers)
+    dataset = TextDataset(texts)
 
     sampler = MaxTokenBatchSampler(
         sequence_lengths=sequence_lengths,
@@ -427,17 +409,12 @@ def build_dynamic_batch_dataloader(
         min_batch_size=batch_size,
         shuffle=shuffle,
         threshold=threshold,
-        batch_start_range=batch_start_range,
-        batch_end_range=batch_end_range,
-        steps=steps,
+        max_batch_range=max_batch_range,
         shuffle_seed=shuffle_seed,
         shuffle_keep_first_n=shuffle_keep_first_n,
         friendly_batch_size=friendly_batch_size,
-        max_batch_size=max_batch_size,
         dynamic_batch_mode=dynamic_batch_mode,
     )
-
-    dataset = TextDataset(texts)
 
     if debug:
         return DataLoader(

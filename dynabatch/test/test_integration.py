@@ -109,6 +109,24 @@ def test_dataloader_first_batch_min_size(sample_texts, mock_tokenizer):
     assert first_batch["input_ids"].shape[0] == _BATCH_SIZE
 
 
+def test_dataloader_max_batch_range_kwarg(sample_texts, mock_tokenizer):
+    """build_dynamic_batch_dataloader forwards max_batch_range to the sampler."""
+    loader = build_dynamic_batch_dataloader(
+        texts=sample_texts,
+        tokenizer=mock_tokenizer,
+        batch_size=_BATCH_SIZE,
+        max_input_token_length=_MAX_TOKEN_LEN,
+        max_batch_range=2.5,
+        shuffle=False,
+        num_workers=0,
+        dynamic_batch_mode=True,
+    )
+    seen = []
+    for batch in loader:
+        seen.extend(batch["texts"])
+    assert sorted(seen) == sorted(sample_texts)
+
+
 # ---------------------------------------------------------------------------
 # test_mock_training_loop
 # ---------------------------------------------------------------------------
