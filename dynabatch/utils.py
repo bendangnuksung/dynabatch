@@ -1,6 +1,7 @@
 import gc
 import math
 import traceback
+from typing import Any
 
 import torch
 
@@ -76,6 +77,73 @@ def merge_outputs(outputs: list[torch.Tensor]) -> torch.Tensor | None:
         padded_outputs.append(o)
 
     return torch.cat(padded_outputs, dim=0)
+
+
+def generate_with_oom_fallback(
+    model: Any,
+    batch: dict,
+    min_batch_size: int,
+    device: torch.device,
+    **generate_kwargs: Any,
+) -> tuple[torch.Tensor, bool]:
+    """
+    Run ``model.generate()`` with OOM-safe fallback splitting.
+
+    Attempts to generate from the full ``batch`` in one call. If a
+    ``torch.cuda.OutOfMemoryError`` is raised, GPU memory is cleared, the
+    batch is split into sub-batches of at most ``min_batch_size`` items, each
+    sub-batch is generated independently with proper GPU cleanup between steps,
+    and the results are merged back into a single tensor.
+
+    Each sub-batch's output is immediately moved to CPU after generation so
+    that only one sub-batch worth of activations lives on GPU at a time during
+    recovery, minimising peak memory pressure.
+
+    Args:
+        model:            The generative model (must expose a ``generate`` method
+                          compatible with HuggingFace's interface).
+        batch:            A dict with at least ``"input_ids"`` and
+                          ``"attention_mask"`` keys, whose values are CPU tensors
+                          indexed along the first dimension.
+        min_batch_size:   Maximum number of items per sub-batch during fallback
+                          recovery. Use the same value passed as ``batch_size``
+                          to ``build_dynamic_batch_dataloader``.
+        device:           The torch device to move tensors onto before calling
+                          ``generate``.
+        **generate_kwargs: Additional keyword arguments forwarded to
+                          ``model.generate()`` on every call (e.g.
+                          ``forced_bos_token_id``).
+
+    Returns:
+        A tuple ``(output, did_fallback)`` where ``output`` is the merged
+        generated token tensor and ``did_fallback`` is ``True`` if an OOM
+        occurred and the fallback path was used.
+    """
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    try:
+        output = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **generate_kwargs,
+        )
+        del input_ids, attention_mask
+        return output, False
+    except torch.cuda.OutOfMemoryError as oom_error:
+        clear_gpu_memory(oom_error, input_ids=input_ids, attention_mask=attention_mask)
+        sub_outputs = []
+        for sub_batch in split_batch(batch, chunk_size=min_batch_size):
+            sub_input = sub_batch["input_ids"].to(device)
+            sub_mask = sub_batch["attention_mask"].to(device)
+            sub_output = model.generate(
+                input_ids=sub_input,
+                attention_mask=sub_mask,
+                **generate_kwargs,
+            )
+            sub_outputs.append(sub_output.cpu())
+            del sub_input, sub_mask, sub_output
+            torch.cuda.empty_cache()
+        return merge_outputs(sub_outputs), True
 
 
 def get_hardware_friendly_batch_size(target_size: int) -> int:

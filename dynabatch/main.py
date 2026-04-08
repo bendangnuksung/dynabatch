@@ -36,6 +36,7 @@ def _select_optimal_batch_size(
     batch_start_range: float = 1.0,
     batch_end_range: float = 6.0,
     steps: int = 50,
+    max_batch_size: int | None = None,
 ) -> int:
     """
     Use the pre-trained classifier to find the largest batch size that keeps
@@ -46,6 +47,10 @@ def _select_optimal_batch_size(
     ``baseline_batch_size * batch_end_range``, builds the same feature set the
     classifier was trained on, and returns the largest candidate whose predicted
     spike probability is at or below ``threshold``.
+
+    If ``max_batch_size`` is provided, the result is capped at that value,
+    which prevents the classifier from suggesting sizes beyond what the GPU
+    can handle for models with large baseline batch sizes.
     """
     max_allowed = len(sequence_lengths)
     multipliers = np.linspace(batch_start_range, batch_end_range, steps)
@@ -132,8 +137,13 @@ def _select_optimal_batch_size(
     optimal_batch_size = int(np.max(safe_mask * candidate_batch_sizes))
 
     if optimal_batch_size == 0:
-        return min(baseline_batch_size, max_allowed)
-    return min(optimal_batch_size, max_allowed)
+        result = min(baseline_batch_size, max_allowed)
+    else:
+        result = min(optimal_batch_size, max_allowed)
+
+    if max_batch_size is not None:
+        result = min(result, max_batch_size)
+    return result
 
 
 class MaxTokenBatchSampler(Sampler[list[int]]):
@@ -150,6 +160,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle_seed: int = 21,
         shuffle_keep_first_n: int = 5,
         friendly_batch_size: bool = False,
+        max_batch_size: int | None = None,
     ):
         sorted_indices = sorted(
             range(len(sequence_lengths)),
@@ -165,6 +176,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.shuffle_seed = shuffle_seed
         self.shuffle_keep_first_n = shuffle_keep_first_n
         self.friendly_batch_size = friendly_batch_size
+        self.max_batch_size = max_batch_size
 
         self.batches = self._build_batches(sorted_indices, sequence_lengths, shuffle)
 
@@ -213,6 +225,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 batch_start_range=self.batch_start_range,
                 batch_end_range=self.batch_end_range,
                 steps=self.steps,
+                max_batch_size=self.max_batch_size,
             )
             if self.friendly_batch_size:
                 optimal_size = get_hardware_friendly_batch_size(optimal_size)
@@ -306,6 +319,7 @@ def build_dynamic_batch_dataloader(
     batch_end_range: float = 6.0,
     steps: int = 50,
     debug: bool = False,
+    max_batch_size: int | None = None,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
     """
@@ -363,6 +377,11 @@ def build_dynamic_batch_dataloader(
                                 ``batch_start_range`` and ``batch_end_range``.
         debug:                  If True, return a DataLoader without parallel workers.
                                 Parallel workers makes hard to debug. Only use for debugging.
+        max_batch_size:         Hard upper bound on the batch size the classifier can
+                                suggest. Useful when the baseline ``batch_size`` is
+                                large (e.g. 304) and the default ``batch_end_range``
+                                would produce candidates far beyond what the GPU can
+                                handle. ``None`` (default) means no cap.
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
                                 during collation (e.g. ``max_length``,
                                 ``add_special_tokens``).
@@ -390,6 +409,7 @@ def build_dynamic_batch_dataloader(
         shuffle_seed=shuffle_seed,
         shuffle_keep_first_n=shuffle_keep_first_n,
         friendly_batch_size=friendly_batch_size,
+        max_batch_size=max_batch_size,
     )
 
     dataset = TextDataset(texts)
