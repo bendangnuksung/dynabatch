@@ -3,8 +3,12 @@ name: Lint
 on:
   push:
     branches: [main]
+    paths:
+      - "dynabatch/**"
   pull_request:
     branches: [main]
+    paths:
+      - "dynabatch/**"
 
 jobs:
   black-isort:
