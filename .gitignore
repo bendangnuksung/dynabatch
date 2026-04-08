@@ -6,3 +6,6 @@ dynabatch.egg-info/
 __pycache__/
 *.pyc
 *.pyo
+.vscode/
+.env*
+.pytest_cache/
