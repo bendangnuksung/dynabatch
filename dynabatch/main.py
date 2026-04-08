@@ -173,7 +173,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
 
         self.batch_start_range = 1.0
         self.batch_end_range = max(max_batch_range, 1.0)
-        self.steps = int((self.batch_end_range - self.batch_start_range) * 10)
+        self.steps = 20
 
         self.batches = self._build_batches(sorted_indices, sequence_lengths)
 
