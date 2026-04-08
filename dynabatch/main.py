@@ -161,6 +161,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle_keep_first_n: int = 5,
         friendly_batch_size: bool = False,
         max_batch_size: int | None = None,
+        dynamic_batch_mode: bool = True,
     ):
         sorted_indices = sorted(
             range(len(sequence_lengths)),
@@ -173,21 +174,16 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.batch_start_range = batch_start_range
         self.batch_end_range = batch_end_range
         self.steps = steps
+        self.shuffle = shuffle
         self.shuffle_seed = shuffle_seed
         self.shuffle_keep_first_n = shuffle_keep_first_n
         self.friendly_batch_size = friendly_batch_size
         self.max_batch_size = max_batch_size
+        self.dynamic_batch_mode = dynamic_batch_mode
 
-        self.batches = self._build_batches(sorted_indices, sequence_lengths, shuffle)
+        self.batches = self._build_batches(sorted_indices, sequence_lengths)
 
-    def _build_batches(
-        self,
-        sorted_indices: list[int],
-        lengths: list[int],
-        shuffle: bool,
-    ) -> list[list[int]]:
-        random.seed(self.shuffle_seed)
-
+    def _build_dynamic_batches(self, lengths: list[tuple[int, int, int]], sorted_indices: list[int]):
         lengths = np.array(lengths)
         sorted_lengths = lengths[sorted_indices]
         sorted_token_lengths = sorted_lengths[:, 0]
@@ -231,14 +227,39 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 optimal_size = get_hardware_friendly_batch_size(optimal_size)
 
             batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
-            if shuffle:
+            if self.shuffle:
                 random.shuffle(batch_indices)
             batches.append(batch_indices)
 
             remaining_lengths = remaining_lengths[optimal_size:]
             next_start_idx += optimal_size
 
-        if shuffle and len(batches) > self.shuffle_keep_first_n:
+        return batches
+
+    def _build_static_batches(self, sorted_indices: list[int]):
+        """
+        This method is same as Max Token Sampler/Batching
+        """
+        batches = []
+        for i in range(0, len(sorted_indices), self.min_batch_size):
+            batch_indices = sorted_indices[i : i + self.min_batch_size]
+            if self.shuffle:
+                random.shuffle(batch_indices)
+            batches.append(batch_indices)
+        return batches
+
+    def _build_batches(
+        self,
+        sorted_indices: list[int],
+        lengths: list[int],
+    ) -> list[list[int]]:
+        random.seed(self.shuffle_seed)
+        if self.dynamic_batch_mode:
+            batches = self._build_dynamic_batches(lengths, sorted_indices)
+        else:
+            batches = self._build_static_batches(sorted_indices)
+
+        if self.shuffle and len(batches) > self.shuffle_keep_first_n:
             first_half = batches[: self.shuffle_keep_first_n]
             second_half = batches[self.shuffle_keep_first_n :]
             random.shuffle(second_half)
@@ -320,6 +341,7 @@ def build_dynamic_batch_dataloader(
     steps: int = 50,
     debug: bool = False,
     max_batch_size: int | None = None,
+    dynamic_batch_mode: bool = True,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
     """
@@ -382,6 +404,8 @@ def build_dynamic_batch_dataloader(
                                 large (e.g. 304) and the default ``batch_end_range``
                                 would produce candidates far beyond what the GPU can
                                 handle. ``None`` (default) means no cap.
+        dynamic_batch_mode:     If True, use the dynamic batch mode. If False, it becomes
+                                the same as Max Token Sampler/Batching with static batch size.
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
                                 during collation (e.g. ``max_length``,
                                 ``add_special_tokens``).
@@ -410,6 +434,7 @@ def build_dynamic_batch_dataloader(
         shuffle_keep_first_n=shuffle_keep_first_n,
         friendly_batch_size=friendly_batch_size,
         max_batch_size=max_batch_size,
+        dynamic_batch_mode=dynamic_batch_mode,
     )
 
     dataset = TextDataset(texts)

@@ -50,6 +50,19 @@ def _build_loader(sample_texts, mock_tokenizer, shuffle=False):
         max_input_token_length=_MAX_TOKEN_LEN,
         shuffle=shuffle,
         num_workers=0,
+        dynamic_batch_mode=True,
+    )
+
+
+def _build_static_loader(sample_texts, mock_tokenizer, shuffle=False):
+    return build_dynamic_batch_dataloader(
+        texts=sample_texts,
+        tokenizer=mock_tokenizer,
+        batch_size=_BATCH_SIZE,
+        max_input_token_length=_MAX_TOKEN_LEN,
+        shuffle=shuffle,
+        num_workers=0,
+        dynamic_batch_mode=False,
     )
 
 
@@ -145,7 +158,8 @@ def test_mock_training_loop(sample_texts, mock_tokenizer):
 # ---------------------------------------------------------------------------
 
 
-def test_mock_inference_loop(sample_texts, mock_tokenizer):
+@pytest.mark.parametrize("loader_builder", [_build_loader, _build_static_loader])
+def test_mock_inference_loop(sample_texts, mock_tokenizer, loader_builder):
     """
     Simulates an inference loop:
       - iterate dataloader inside torch.no_grad()
@@ -156,7 +170,7 @@ def test_mock_inference_loop(sample_texts, mock_tokenizer):
     model = _SimpleModel()
     model.eval()
 
-    loader = _build_loader(sample_texts, mock_tokenizer)
+    loader = loader_builder(sample_texts, mock_tokenizer)
 
     outputs = []
     with torch.no_grad():
