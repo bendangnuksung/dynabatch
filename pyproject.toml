@@ -15,6 +15,7 @@ dependencies = [
     "scikit-learn",
     "numpy",
     "pandas",
+    "datasets"
 ]
 
 [project.urls]
