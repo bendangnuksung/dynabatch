@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "dynabatch/**"
+  workflow_dispatch:
 
 jobs:
   pytest:
