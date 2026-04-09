@@ -13,6 +13,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+import dynabatch.main as _main_module
 from dynabatch import build_dynamic_batch_dataloader
 from dynabatch.utils import merge_outputs, split_batch
 
@@ -66,6 +67,21 @@ def _build_static_loader(sample_texts, mock_tokenizer, shuffle=False):
     )
 
 
+@pytest.fixture(autouse=True)
+def _patch_compute_lengths(monkeypatch, precomputed_lengths):
+    """
+    Replace compute_lengths inside build_dynamic_batch_dataloader with a fast
+    stub that returns the session-cached result, eliminating repeated HF Dataset
+    overhead on every integration test.
+    """
+    token_lengths, word_lengths, char_lengths, truncated_texts = precomputed_lengths
+
+    def _fast_compute_lengths(texts, tokenizer, max_length, max_workers=4):
+        return token_lengths, word_lengths, char_lengths, truncated_texts
+
+    monkeypatch.setattr(_main_module, "compute_lengths", _fast_compute_lengths)
+
+
 # ---------------------------------------------------------------------------
 # test_build_dynamic_batch_dataloader
 # ---------------------------------------------------------------------------
@@ -80,11 +96,14 @@ def test_dataloader_batch_keys(sample_texts, mock_tokenizer):
 
 
 def test_dataloader_covers_all_texts(sample_texts, mock_tokenizer):
+    from dynabatch.main import compute_lengths
+
+    _, _, _, truncated_texts = compute_lengths(sample_texts, mock_tokenizer, max_length=_MAX_TOKEN_LEN)
     loader = _build_loader(sample_texts, mock_tokenizer)
     seen_texts = []
     for batch in loader:
         seen_texts.extend(batch["texts"])
-    assert sorted(seen_texts) == sorted(sample_texts)
+    assert sorted(seen_texts) == sorted(truncated_texts)
 
 
 def test_dataloader_no_duplicate_texts(sample_texts, mock_tokenizer):
@@ -111,6 +130,9 @@ def test_dataloader_first_batch_min_size(sample_texts, mock_tokenizer):
 
 def test_dataloader_max_batch_range_kwarg(sample_texts, mock_tokenizer):
     """build_dynamic_batch_dataloader forwards max_batch_range to the sampler."""
+    from dynabatch.main import compute_lengths
+
+    _, _, _, truncated_texts = compute_lengths(sample_texts, mock_tokenizer, max_length=_MAX_TOKEN_LEN)
     loader = build_dynamic_batch_dataloader(
         texts=sample_texts,
         tokenizer=mock_tokenizer,
@@ -124,7 +146,7 @@ def test_dataloader_max_batch_range_kwarg(sample_texts, mock_tokenizer):
     seen = []
     for batch in loader:
         seen.extend(batch["texts"])
-    assert sorted(seen) == sorted(sample_texts)
+    assert sorted(seen) == sorted(truncated_texts)
 
 
 # ---------------------------------------------------------------------------
