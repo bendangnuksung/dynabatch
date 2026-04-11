@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynabatch"
-description = "PyTorch DataLoader with dynamic batch sizing guided by a pre-trained GPU memory classifier."
+description = "PyTorch DataLoader with dynamic batch sizing guided by a pre-trained GPU memory regressor."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -26,7 +26,7 @@ Repository = "https://github.com/bendangnuksung/dynabatch"
 packages = ["dynabatch"]
 
 [tool.setuptools.package-data]
-dynabatch = ["models/*.pkl"]
+dynabatch = ["models/*.ubj"]
 
 [tool.setuptools.dynamic]
 version = { attr = "dynabatch.__version__" }
