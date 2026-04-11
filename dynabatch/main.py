@@ -358,13 +358,13 @@ def build_dynamic_batch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.75,
+    threshold: float = 0.6,
+    max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
     friendly_batch_size: bool = False,
     num_workers: int = 4,
-    max_batch_range: float = 1.5,
     debug: bool = False,
     dynamic_batch_mode: bool = True,
     apply_template_func: Callable | None = None,
@@ -415,7 +415,8 @@ def build_dynamic_batch_dataloader(
                                 kept; the largest kept size is used. Default ``0.75``
                                 caps predicted load below that 1.0 reference. Lower =
                                 more conservative; higher = larger batches, more risk.
-
+        max_batch_range:        Maximum batch-size multiplier range
+                                relative to ``batch_size``.
         shuffle:                If True, shuffle the order of the pre-built batches.
                                 Sequences within each batch remain length-similar.
         shuffle_seed:           Seed for the random number generator used to shuffle
@@ -428,8 +429,6 @@ def build_dynamic_batch_dataloader(
                                 or 3 times a power of 2. Good for training.
         num_workers:            Number of parallel data-loading workers. Safe to set
                                 above 0 since the collate function is picklable.
-        max_batch_range:        Maximum batch-size multiplier range
-                                relative to ``batch_size``.
         debug:                  If True, return a DataLoader without parallel workers.
                                 Parallel workers makes hard to debug. Only use for debugging.
         dynamic_batch_mode:     If True, use the dynamic batch mode. If False, it becomes

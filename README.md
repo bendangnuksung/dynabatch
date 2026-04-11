@@ -1,105 +1,158 @@
 # dynabatch
 
-A drop-in replacement for PyTorch's `DataLoader` that eliminates padding waste by using a pre-trained classifier to dynamically size each batch so that GPU memory usage stays safe.
+`dynabatch` is a drop-in batching utility for variable-length text generation workloads. It sorts inputs by length and uses a pre-trained **regressor** to increase batch size on shorter examples while keeping memory pressure relative to the first, hardest batch.
+
+It is mainly built and tested for machine translation style workloads, where input length is a decent proxy for output length and memory usage.
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install dynabatch
 ```
+
+## When dynabatch helps
+
+dynabatch is most useful when:
+
+- long examples force you to choose a conservative fixed batch size
+- that conservative batch size leaves GPU compute underutilized on the many shorter examples later in the dataset
+- your task has a reasonably predictable relation between input length and generation cost
+
+This is the common translation scenario:
+
+- a few very long inputs force a small safe batch size because they eat a lot of VRAM
+- once those hard batches are out of the way, later shorter batches could fit many more examples
+- increasing batch size there improves throughput and reduces wasted padding
+
+It is less useful when the GPU is already compute-bound even at the smallest safe batch size. In that case, making the batch larger does not buy much. If you want to check that, compare:
+
+- `dynamic_batch_mode=True`
+- `dynamic_batch_mode=False`
+
+If both behave similarly, dynabatch is probably not your bottleneck.
 
 ## Quick Start
 
 ```python
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from dynabatch import build_dynamic_batch_dataloader
 
+tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
+model = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M").cuda()
+device = torch.device("cuda")
+
+texts = [
+    "Hello world",
+    "A much longer sentence that will tokenize to more input tokens.",
+    "Short one",
+]
+
 dataloader = build_dynamic_batch_dataloader(
-    texts=your_texts,
-    tokenizer=your_tokenizer,
-    batch_size=64,               # minimum batch size (used for the first, hardest batch)
-    max_input_token_length=512,  # hard truncation limit per sequence
+    texts=texts,
+    tokenizer=tokenizer,
+    batch_size=32,
+    max_input_token_length=256,
 )
 
-for batch in dataloader:
-    outputs = model.generate(**batch)
+with torch.inference_mode():
+    for batch in dataloader:
+        outputs = model.generate(
+            input_ids=batch["input_ids"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+        )
 ```
 
-## 📒 Notebooks to test out
+## More Examples
 
-| Notebooks | Links 
-|-----------|---------|
-| **Inference Comparison**      | [🟠🟡 Collab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)            
-| **Training Comparison**      | [🟠🟡 Collab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)   
+### Compare dynamic vs static batching
 
+Use the same baseline `batch_size`, then toggle `dynamic_batch_mode`.
+
+```python
+dynamic_loader = build_dynamic_batch_dataloader(
+    texts=texts,
+    tokenizer=tokenizer,
+    batch_size=32,
+    max_input_token_length=256,
+    dynamic_batch_mode=True,
+)
+
+static_loader = build_dynamic_batch_dataloader(
+    texts=texts,
+    tokenizer=tokenizer,
+    batch_size=32,
+    max_input_token_length=256,
+    dynamic_batch_mode=False,
+)
+```
+
+`dynamic_batch_mode=False` behaves like a length-sorted static batcher, which is useful as an ablation or sanity check.
+
+### OOM-safe generation with fallback splitting
+
+The regressor is empirical, so it can still occasionally predict a batch size that turns out too aggressive for a specific model, prompt template, GPU state, or generation setting. `generate_with_oom_fallback()` lets you keep the run alive by splitting only the failed batch into smaller chunks.
+
+```python
+import torch
+from dynabatch import build_dynamic_batch_dataloader, generate_with_oom_fallback
+
+device = torch.device("cuda")
+
+dataloader = build_dynamic_batch_dataloader(
+    texts=texts,
+    tokenizer=tokenizer,
+    batch_size=32,
+    max_input_token_length=256,
+)
+
+with torch.inference_mode():
+    for batch in dataloader:
+        generated_tokens, did_fallback = generate_with_oom_fallback(
+            model,
+            batch,
+            min_batch_size=32,
+            device=device,
+            max_new_tokens=128,
+        )
+
+        if did_fallback:
+            print("Fallback path used for this batch after an OOM.")
+```
+
+This is useful when you want throughput from dynamic batching without letting one occasional OOM kill a long inference run.
+
+### Training-style usage
+
+If you want hardware-friendly sizes for training, enable `friendly_batch_size=True`.
+
+```python
+train_loader = build_dynamic_batch_dataloader(
+    texts=texts,
+    tokenizer=tokenizer,
+    batch_size=16,
+    max_input_token_length=256,
+    friendly_batch_size=True,
+    shuffle=True,
+)
+```
 
 ## How It Works
 
-### The Problem
+1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
+2. Samples are sorted by token length from longest to shortest.
+3. The first batch uses exactly `batch_size` items. This is the hardest batch and becomes the baseline.
+4. For every later batch, dynabatch builds candidate batch sizes from `batch_size` up to `batch_size * max_batch_range`.
+5. A pre-trained `XGBRegressor` predicts memory pressure for each candidate relative to the first batch.
+6. dynabatch chooses the largest candidate whose predicted load is less than or equal to `threshold`.
 
-A standard `DataLoader` pads every batch to the longest sequence in the dataset. If your longest text is 512 tokens but most are 20-50 tokens, you waste enormous GPU compute on padding. Fixed-size batches also risk OOM on long-sequence batches or underutilise the GPU on short-sequence batches.
+The important intuition is:
 
-### The Solution
+- around `1.0` means "about as memory heavy as the first batch"
+- below `1.0` means lighter than the first batch
+- above `1.0` means heavier than the first batch and therefore riskier
 
-dynabatch sorts sequences by length (longest first) and uses a **pre-trained classifier** to decide how many sequences to pack into each batch, ensuring GPU memory never exceeds ~90% of the first batch's peak allocation.
-
-#### Step-by-step
-
-1. **Tokenize and sort**: All input texts are tokenized and sorted by token length in descending order.
-
-2. **First batch as baseline**: The first batch uses exactly `batch_size` items — these are the longest sequences, making it the hardest batch. If your GPU survives this batch, it is guaranteed to survive every subsequent batch.
-
-3. **Classifier-guided scaling**: For each subsequent batch, the system generates candidate batch sizes (from `1x` to `6x` the base `batch_size`) and asks the classifier: *"what is the probability that this batch configuration will cause a GPU memory spike?"* It picks the largest candidate whose spike probability stays below `threshold` (default 2.5%).
-
-### The Classifier
-
-The classifier is a `HistGradientBoostingClassifier` (scikit-learn) trained on real GPU memory profiles. It was trained as follows:
-
-#### 1. Data Collection (`train_classifier/generate_training_data.py`)
-
-Training data is generated by running actual inference across multiple models (NLLB-600M, ALMA-7B, MarianNMT, etc.) with different configurations:
-
-- Multiple `batch_size` values: 1, 4, 8, 64, 128, 256, 512
-- Multiple `max_input_length` values: 128, 256, 512
-- Text data augmented to cover a wide distribution of sequence lengths (1-500 words)
-
-For each run, sequences are sorted by length and processed with progressively increasing batch sizes. At every step the script records:
-- **GPU peak memory usage** (via `torch.cuda.max_memory_allocated`)
-- Batch size, token counts, padding counts, and the top token length in the batch
-
-This is run multiple times with different models to make the classifier model-agnostic.
-
-#### 2. Feature Engineering (`train_classifier/train_classifier.py`)
-
-Each data point captures the relationship between the **first batch** (baseline) and the **current batch**:
-
-| Feature | Description |
-|---|---|
-| `max_input_length` | Hard truncation limit |
-| `token_size_x` / `token_size_y` | Longest token length in the first / current batch |
-| `token_size_diff` | `token_size_y / token_size_x` |
-| `batch_size_x` / `batch_size_y` | First / current batch size |
-| `batch_size_diff` | `batch_size_y / batch_size_x` |
-| `total_tokens_x` / `total_tokens_y` | Total tokens in first / current batch |
-| `total_token_size_diff` | `total_tokens_y / total_tokens_x` |
-| `paddings_x` / `paddings_y` | Total padding tokens in first / current batch |
-| `total_paddings_diff` | `paddings_y / paddings_x` |
-
-The target label is binary: **1** if `gpu_memory / first_batch_peak_gpu > 0.90` (spike), **0** otherwise.
-
-#### 3. Why It Generalises
-
-By expressing everything as **ratios relative to the first batch** rather than absolute values, the classifier learns patterns that transfer across models and hardware. It doesn't need to know your specific GPU's VRAM or your model's parameter count — it only needs to know how the current batch compares to the first batch, which serves as an empirical calibration point.
-
-### Runtime Behaviour
-
-The `threshold` parameter controls conservatism:
-- **Lower threshold** (e.g. 0.01): very conservative, less risk of OOM, slightly more padding waste
-- **Higher threshold** (e.g. 0.10): more aggressive packing, higher throughput, slightly more OOM risk
-
-What the job feels like at runtime:
-- **Early batches**: slow, few items, long sequences
-- **Later batches**: progressively faster, more items, shorter sequences
-- The job naturally accelerates as it runs
+So you should choose `batch_size` as the largest batch of your longest inputs that safely fits on your GPU. The regressor then tries to grow from there when the later inputs get shorter.
 
 ## API
 
@@ -110,42 +163,54 @@ build_dynamic_batch_dataloader(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
-    max_input_token_length: int,
-    threshold: float = 0.025,
+    max_input_token_length: int = 512,
+    threshold: float = 0.6,
+    max_batch_range: float = 2.0,
     shuffle: bool = False,
+    shuffle_seed: int = 21,
+    shuffle_keep_first_n: int = 3,
+    friendly_batch_size: bool = False,
     num_workers: int = 4,
-    batch_start_range: float = 1.0,
-    batch_end_range: float = 6.0,
-    steps: int = 50,
+    debug: bool = False,
+    dynamic_batch_mode: bool = True,
+    apply_template_func: Callable | None = None,
     **tokenizer_kwargs,
 ) -> DataLoader
 ```
 
 | Parameter | Description |
 |---|---|
-| `texts` | Raw input strings of any length |
-| `tokenizer` | Any HuggingFace tokenizer |
-| `batch_size` | Minimum batch size, used for the first (hardest) batch. The classifier scales up from this for shorter sequences |
-| `max_input_token_length` | Hard truncation limit per sequence |
-| `threshold` | Max spike probability tolerated per candidate batch size (default 0.025 = 2.5%) |
-| `shuffle` | Shuffle the order of pre-built batches (sequences within a batch remain length-similar) |
-| `num_workers` | Parallel data loading workers |
-| `batch_start_range` | Lower multiplier bound for candidate batch sizes relative to `batch_size` (default 1.0) |
-| `batch_end_range` | Upper multiplier bound for candidate batch sizes relative to `batch_size` (default 6.0) |
-| `steps` | Number of candidate batch sizes to evaluate (default 50) |
+| `texts` | Raw input strings. |
+| `tokenizer` | Any tokenizer compatible with the Hugging Face tokenizer interface. |
+| `batch_size` | The baseline batch size for the first, longest batch. In practice, set this to the largest safe batch size for your worst-case inputs. |
+| `max_input_token_length` | Hard truncation limit used while estimating lengths and later tokenizing the batches. |
+| `threshold` | Maximum allowed regressor prediction for a candidate batch. Roughly, `1.0` means "as memory-heavy as the first batch". Lower values are more conservative. |
+| `max_batch_range` | Upper multiplier for candidate batch sizes relative to `batch_size`. With `batch_size=32` and `max_batch_range=2.0`, dynabatch will search up to about `64`. |
+| `shuffle` | Shuffles the already-built batches. Within a batch, lengths stay similar. |
+| `shuffle_seed` | Seed used when shuffling. |
+| `shuffle_keep_first_n` | Keeps the first few batches in original order before shuffling the rest. This is helpful because the earliest batches are the hardest ones. |
+| `friendly_batch_size` | Rounds chosen batch sizes down to hardware-friendly values such as powers of two or `3 * 2^n`. Useful for some training setups. |
+| `num_workers` | Worker count used by the returned `DataLoader`. If set to `0` or `None` outside debug mode, the implementation falls back to CPU count. |
+| `debug` | Disables worker parallelism in the final loader to make debugging easier. |
+| `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, you still get length sorting, but the batch size stays fixed. This is the main switch for testing whether dynabatch actually helps your workload. |
+| `apply_template_func` | Optional function applied to the batch texts before final tokenization. If your template adds tokens, make sure `max_input_token_length` still makes sense after templating. |
+| `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation. |
 
-Returns a `DataLoader` yielding dicts with `input_ids`, `attention_mask`, `texts`, and any other keys from your tokenizer, as PyTorch tensors.
+The returned `DataLoader` yields dictionaries containing `input_ids`, `attention_mask`, `texts`, and any other tokenizer outputs.
 
-## Retraining the Classifier
+## Regressor Training
 
-If you want to retrain the classifier for your specific hardware or models:
+The runtime model is a regressor, not a classifier. The training pipeline and notebook notes now live in `train_regressor/readme.md`.
 
-```bash
-# 1. Generate training data (run multiple times with different models)
-python train_classifier/generate_training_data.py
+In short:
 
-# 2. Train the classifier
-python train_classifier/train_classifier.py
-```
+- the training data stores real GPU memory usage from many batch configurations
+- the target is memory usage relative to the first batch
+- the notebook trains an `XGBRegressor` to predict that ratio from token, word, and character statistics of the baseline batch and candidate batch
 
-Copy the output `classifier.pkl` into `dynabatch/models/` to use it at runtime.
+## Notebooks
+
+- Inference comparison notebook: `notebooks/dynabatch_inference_comparison.ipynb`
+- Regressor training notebook: `train_regressor/train_regression.ipynb`
+
+Some older notebook cells may still show stale argument names or older thresholds, so prefer the current Python API in `dynabatch/main.py` for exact runtime behavior.
