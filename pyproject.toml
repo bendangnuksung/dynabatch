@@ -15,7 +15,8 @@ dependencies = [
     "scikit-learn",
     "numpy",
     "pandas",
-    "datasets"
+    "datasets",
+   "xgboost>=3.2.0"
 ]
 
 [project.urls]

@@ -1,6 +1,4 @@
-import concurrent.futures
 import os
-import pickle
 import random
 from functools import partial
 from typing import Any, Callable, Iterator
@@ -8,6 +6,7 @@ from typing import Any, Callable, Iterator
 import numpy as np
 import pandas as pd
 import torch
+import xgboost as xgb
 from datasets import Dataset as HuggingFaceDataset
 from datasets import DatasetDict
 from torch.utils.data import DataLoader, Dataset, Sampler
@@ -21,64 +20,40 @@ PreTrainedTokenizerBase = Any
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-_CLASSIFIER_PATH = os.path.join(os.path.dirname(__file__), "models", "classifier.pkl")
-with open(_CLASSIFIER_PATH, "rb") as _f:
-    _CLASSIFIER = pickle.load(_f)
+_REGRESSOR_PATH = os.path.join(os.path.dirname(__file__), "models", "regressor.ubj")
+_REGRESSOR = xgb.XGBRegressor()
+_REGRESSOR.load_model(_REGRESSOR_PATH)
 
 
 def _select_optimal_batch_size(
-    max_input_length: int,
     token_lengths: list[int],
     word_lengths: list[int],
     char_lengths: list[int],
-    baseline_max_token_len: int,
-    baseline_max_word_len: int,
-    baseline_max_char_len: int,
-    baseline_batch_size: int,
-    baseline_total_tokens: int,
-    threshold: float = 0.025,
-    batch_start_range: float = 1.0,
-    batch_end_range: float = 6.0,
-    steps: int = 50,
+    baseline_features: dict[str, Any],
+    threshold: float,
+    candidate_batch_sizes: list[int],
 ) -> int:
     """
-    Use the pre-trained classifier to find the largest batch size that keeps
-    predicted GPU memory usage below the spike threshold.
+    Use the pre-trained regressor to find the largest batch size whose predicted
+    memory pressure stays at or below ``threshold`` relative to the first batch.
 
-    Generates ``steps`` candidate batch sizes between
+    Generates candidate batch sizes between
     ``baseline_batch_size * batch_start_range`` and
     ``baseline_batch_size * batch_end_range``, builds the same feature set the
-    classifier was trained on, and returns the largest candidate whose predicted
-    spike probability is at or below ``threshold``.
-
-    If ``max_batch_size`` is provided, the result is capped at that value,
-    which prevents the classifier from suggesting sizes beyond what the GPU
-    can handle for models with large baseline batch sizes.
+    regressor was trained on, and returns the largest candidate whose prediction
+    is at or below ``threshold`` (see ``build_dynamic_batch_dataloader`` docs for
+    how that scale relates to the baseline batch).
     """
-    max_allowed = len(token_lengths)
-    multipliers = np.linspace(batch_start_range, batch_end_range, steps)
-    candidate_batch_sizes = np.ceil(baseline_batch_size * multipliers).astype(int)
-
     features: dict[str, list] = {
-        "max_input_length": [max_input_length] * steps,
-        "token_size_x": [baseline_max_token_len.item()] * steps,
-        "token_size_y": [token_lengths[0].item()] * steps,
-        "token_size_diff": [token_lengths[0].item() / baseline_max_token_len.item()] * steps,
-        "batch_size_x": [baseline_batch_size] * steps,
         "batch_size_y": [],
-        "batch_size_diff": [],
-        "total_tokens_x": [baseline_total_tokens] * steps,
-        "total_tokens_y": [],
-        "total_token_size_diff": [],
-        "word_length_x": [baseline_max_word_len.item()] * steps,
-        "char_length_x": [baseline_max_char_len.item()] * steps,
-        "word_length_y": [],
-        "char_length_y": [],
         "token_mean_y": [],
         "token_std_y": [],
-        "token_min_y": [],
-        "token_median_y": [],
-        "token_mode_y": [],
+        # All commented out feature are not used, keeping them for future if we want to use them.
+        # "token_min_y": [],
+        # "token_median_y": [],
+        # "token_mode_y": [],
+        "token_sum_y": [],
+        "token_max_y": [],
         "word_mean_y": [],
         "word_std_y": [],
         "word_min_y": [],
@@ -86,65 +61,60 @@ def _select_optimal_batch_size(
         "word_mode_y": [],
         "word_sum_y": [],
         "word_max_y": [],
-        "char_mean_y": [],
-        "char_std_y": [],
-        "char_min_y": [],
-        "char_median_y": [],
-        "char_mode_y": [],
+        # "char_mean_y": [],
+        # "char_std_y": [],
+        # "char_min_y": [],
+        # "char_median_y": [],
+        # "char_mode_y": [],
         "char_sum_y": [],
-        "char_max_y": [],
+        # "char_max_y": [],
     }
 
     for batch_size in candidate_batch_sizes:
-        token_lengths = token_lengths[:batch_size]
-        word_lengths = word_lengths[:batch_size]
-        char_lengths = char_lengths[:batch_size]
-        total_tokens = token_lengths.sum().item()
+        tl = token_lengths[:batch_size]
+        wl = word_lengths[:batch_size]
+        cl = char_lengths[:batch_size]
+        features["batch_size_y"].append(batch_size)
 
-        features["batch_size_y"].append(batch_size.item())
-        features["batch_size_diff"].append(batch_size.item() / baseline_batch_size)
-        features["total_tokens_y"].append(total_tokens)
-        features["total_token_size_diff"].append(total_tokens / baseline_total_tokens.item())
+        features["token_mean_y"].append(tl.mean())
+        features["token_std_y"].append(tl.std())
+        # All commented out feature are not used, keeping them for future if we want to use them.
+        # features["token_min_y"].append(tl.min())
+        # features["token_median_y"].append(np.median(tl).astype(int))
+        # features["token_mode_y"].append(np.bincount(tl).argmax())
+        features["token_sum_y"].append(tl.sum())
+        features["token_max_y"].append(tl.max())
 
-        features["token_mean_y"].append(token_lengths.mean().item())
-        features["token_std_y"].append(token_lengths.std().item())
-        features["token_min_y"].append(token_lengths.min().item())
-        features["token_median_y"].append(np.median(token_lengths).item())
-        features["token_mode_y"].append(np.bincount(token_lengths).argmax().item())
+        features["word_mean_y"].append(wl.mean())
+        features["word_std_y"].append(wl.std())
+        features["word_min_y"].append(wl.min())
+        features["word_median_y"].append(np.median(wl).astype(int))
+        features["word_mode_y"].append(np.bincount(wl).argmax())
+        features["word_sum_y"].append(wl.sum())
+        features["word_max_y"].append(wl.max())
 
-        features["word_mean_y"].append(word_lengths.mean().item())
-        features["word_std_y"].append(word_lengths.std().item())
-        features["word_min_y"].append(word_lengths.min().item())
-        features["word_median_y"].append(np.median(word_lengths).item())
-        features["word_mode_y"].append(np.bincount(word_lengths).argmax().item())
-        features["word_sum_y"].append(word_lengths.sum().item())
-        features["word_max_y"].append(word_lengths.max().item())
+        # features["char_mean_y"].append(cl.mean())
+        # features["char_std_y"].append(cl.std())
+        # features["char_min_y"].append(cl.min())
+        # features["char_median_y"].append(np.median(cl).astype(int))
+        # features["char_mode_y"].append(np.bincount(cl).argmax())
+        features["char_sum_y"].append(cl.sum())
+        # features["char_max_y"].append(cl.max())
 
-        features["char_mean_y"].append(char_lengths.mean().item())
-        features["char_std_y"].append(char_lengths.std().item())
-        features["char_min_y"].append(char_lengths.min().item())
-        features["char_median_y"].append(np.median(char_lengths).item())
-        features["char_mode_y"].append(np.bincount(char_lengths).argmax().item())
-        features["char_sum_y"].append(char_lengths.sum().item())
-        features["char_max_y"].append(char_lengths.max().item())
-
-        features["word_length_y"].append(word_lengths.max().item())
-        features["char_length_y"].append(char_lengths.max().item())
-
+    features.update(baseline_features)
     feature_df = pd.DataFrame(features)
-    feature_df = feature_df[_CLASSIFIER.feature_names_in_]
 
-    spike_probabilities = _CLASSIFIER.predict_proba(feature_df)[:, 1]
+    feature_df["token_sum_diff"] = feature_df["token_sum_x"] / feature_df["token_sum_y"]
 
-    safe_mask = (spike_probabilities <= threshold).astype(int)
-    optimal_batch_size = int(np.max(safe_mask * candidate_batch_sizes))
+    feature_df = feature_df[_REGRESSOR.get_booster().feature_names]
+
+    preds_raw = _REGRESSOR.predict(feature_df)
+    preds = (preds_raw <= threshold).astype(int)
+    optimal_batch_size = int(np.max(preds * candidate_batch_sizes))
 
     if optimal_batch_size == 0:
-        result = min(baseline_batch_size, max_allowed)
-    else:
-        result = min(optimal_batch_size, max_allowed)
-
-    return result
+        return baseline_features["batch_size_x"][0]
+    return optimal_batch_size
 
 
 class MaxTokenBatchSampler(Sampler[list[int]]):
@@ -162,6 +132,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle_keep_first_n: int = 5,
         friendly_batch_size: bool = False,
         dynamic_batch_mode: bool = True,
+        debug: bool = False,
     ):
         sorted_indices = sorted(
             range(len(token_lengths)),
@@ -179,66 +150,91 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
 
         self.batch_start_range = 1.0
         self.batch_end_range = max(max_batch_range, 1.0)
-        self.steps = 20
+        self.steps = int((self.batch_end_range - self.batch_start_range) * 20)
+
+        self.debug = debug
 
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
 
     def _build_dynamic_batches(
         self, sorted_indices: list[int], token_lengths: list[int], word_lengths: list[int], char_lengths: list[int]
     ):
-        token_lengths = np.array(token_lengths)
-        word_lengths = np.array(word_lengths)
-        char_lengths = np.array(char_lengths)
-        sorted_token_lengths = token_lengths[sorted_indices]
-        sorted_word_lengths = word_lengths[sorted_indices]
-        sorted_char_lengths = char_lengths[sorted_indices]
+        sorted_token_lengths = np.array(token_lengths)[sorted_indices]
+        sorted_word_lengths = np.array(word_lengths)[sorted_indices]
+        sorted_char_lengths = np.array(char_lengths)[sorted_indices]
+
+        multipliers = np.linspace(self.batch_start_range, self.batch_end_range, self.steps)
+        candidate_batch_sizes = np.round(self.min_batch_size * multipliers).astype(int)
+        candidate_batch_sizes = np.unique(candidate_batch_sizes)
 
         # The first batch always contains the longest sequences and uses the
         # minimum batch size — this is the hardest batch and the baseline for
-        # all subsequent classifier predictions.
+        # all subsequent regressor predictions.
         baseline_batch_indices = sorted_indices[: self.min_batch_size]
         batches = [baseline_batch_indices]
 
-        baseline_max_token_len = sorted_token_lengths[0]
-        baseline_max_word_len = sorted_word_lengths[0]
-        baseline_max_char_len = sorted_char_lengths[0]
-        baseline_total_tokens = sorted_token_lengths[: self.min_batch_size].sum()
+        baseline_features = {
+            "batch_size_x": [self.min_batch_size] * len(candidate_batch_sizes),
+            "token_mean_x": [sorted_token_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
+            "token_std_x": [sorted_token_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
+            "token_min_x": [sorted_token_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
+            "token_median_x": [np.median(sorted_token_lengths[: self.min_batch_size]).astype(int)]
+            * len(candidate_batch_sizes),
+            "token_mode_x": [np.bincount(sorted_token_lengths[: self.min_batch_size]).argmax()]
+            * len(candidate_batch_sizes),
+            "token_sum_x": [sorted_token_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
+            "token_max_x": [sorted_token_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
+            # All commented out feature are not used, keeping them for future if we want to use them.
+            # "word_mean_x": [sorted_word_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
+            "word_std_x": [sorted_word_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
+            "word_min_x": [sorted_word_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
+            # "word_median_x": [np.median(sorted_word_lengths[: self.min_batch_size]).astype(int)] * len(candidate_batch_sizes),
+            "word_mode_x": [np.bincount(sorted_word_lengths[: self.min_batch_size]).argmax()]
+            * len(candidate_batch_sizes),
+            "word_sum_x": [sorted_word_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
+            # "word_max_x": [sorted_word_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
+            # "char_mean_x": [sorted_char_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
+            # "char_std_x": [sorted_char_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
+            # "char_min_x": [sorted_char_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
+            # "char_median_x": [np.median(sorted_char_lengths[: self.min_batch_size]).astype(int)] * len(candidate_batch_sizes),
+            # "char_mode_x": [np.bincount(sorted_char_lengths[: self.min_batch_size]).argmax()] * len(candidate_batch_sizes),
+            "char_sum_x": [sorted_char_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
+            # "char_max_x": [sorted_char_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
+        }
 
         remaining_token_lengths = sorted_token_lengths[self.min_batch_size :]
         remaining_word_lengths = sorted_word_lengths[self.min_batch_size :]
         remaining_char_lengths = sorted_char_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
 
-        # 512 is the max input and 64 is the min input because the classifier was trained on these values
-        max_input_length = min(self.max_input_length, 512)
-        max_input_length = max(max_input_length, 64)
-
         while len(remaining_token_lengths):
             optimal_size = _select_optimal_batch_size(
-                max_input_length=max_input_length,
                 token_lengths=remaining_token_lengths,
                 word_lengths=remaining_word_lengths,
                 char_lengths=remaining_char_lengths,
-                baseline_max_token_len=baseline_max_token_len,
-                baseline_max_word_len=baseline_max_word_len,
-                baseline_max_char_len=baseline_max_char_len,
-                baseline_batch_size=self.min_batch_size,
-                baseline_total_tokens=baseline_total_tokens,
+                baseline_features=baseline_features,
                 threshold=self.threshold,
-                batch_start_range=self.batch_start_range,
-                batch_end_range=self.batch_end_range,
-                steps=self.steps,
+                candidate_batch_sizes=candidate_batch_sizes,
             )
             if self.friendly_batch_size:
                 optimal_size = get_hardware_friendly_batch_size(optimal_size)
 
+            # is_last
+            if len(remaining_token_lengths) <= optimal_size:
+                optimal_size = len(remaining_token_lengths)
             batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
             if self.shuffle:
                 random.shuffle(batch_indices)
             batches.append(batch_indices)
 
             remaining_token_lengths = remaining_token_lengths[optimal_size:]
+            remaining_word_lengths = remaining_word_lengths[optimal_size:]
+            remaining_char_lengths = remaining_char_lengths[optimal_size:]
             next_start_idx += optimal_size
+
+            if self.debug:
+                print(f"Batch N: {len(batches)} \t|\t Batch Size: {optimal_size}")
+                print("-" * 40)
 
         return batches
 
@@ -362,7 +358,7 @@ def build_dynamic_batch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.005,
+    threshold: float = 0.75,
     shuffle: bool = False,
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
@@ -376,20 +372,25 @@ def build_dynamic_batch_dataloader(
 ) -> DataLoader:
     """
     A drop-in replacement for a standard DataLoader that eliminates padding waste
-    by using a pre-trained classifier to dynamically size each batch so that GPU
-    memory usage never exceeds ~90% of the first batch's peak allocation.
+    by using a pre-trained regressor to dynamically size each batch while staying
+    near the memory envelope established by the first batch.
 
     How it works:
         1. All sequences are sorted by token length, longest first.
         2. The first batch always uses exactly ``batch_size`` items — the hardest
-           batch, containing the longest sequences. If your model and GPU survive
-           this batch without OOM, every subsequent batch is guaranteed to be safe.
-        3. For every subsequent batch, a HistGradientBoostingClassifier (trained
-           offline on real GPU memory profiles from multiple models) evaluates a
-           range of candidate batch sizes and picks the largest one whose predicted
-           probability of a memory spike stays below ``threshold``.
+           batch (longest sequences). Choose ``batch_size`` as the largest count
+           that does not OOM on those worst-case inputs; the regressor treats that
+           batch as the memory baseline for all later sizing decisions.
+        3. For every later batch, an XGBRegressor (trained offline on real GPU
+           memory profiles) scores each candidate batch size **relative to that
+           first batch**. Interpret the prediction on a scale where about ``1.0``
+           means "similar memory pressure to the first batch"; values above
+           ``1.0`` mean heavier than that baseline and point to OOM risk. The
+           sampler picks the **largest** candidate whose prediction is
+           ≤ ``threshold``. The default ``threshold`` of ``0.75`` stays below the
+           ``1.0`` reference, leaving headroom versus the max-safe first batch.
 
-        The classifier was trained on empirical data: actual GPU memory usage
+        The regressor was trained on empirical data: actual GPU memory usage
         recorded across many (model, batch_size, max_length) combinations. It
         learned the relationship between token counts, padding, batch size ratios,
         and GPU memory pressure — so it generalises across models and hardware
@@ -398,17 +399,23 @@ def build_dynamic_batch_dataloader(
     Args:
         texts:                  Raw input strings of any length.
         tokenizer:              Any HuggingFace tokenizer.
-        batch_size:             Minimum (baseline) batch size, used for the first
-                                (hardest) batch. Pick the largest value that doesn't
-                                OOM on your worst-case input — the classifier scales
-                                up from this for all shorter-sequence batches.
+        batch_size:             Batch size for the first (hardest) batch: the maximum
+                                number of longest sequences your GPU can run without
+                                OOM. This fixes the memory baseline the regressor
+                                compares against; it may increase counts on later,
+                                shorter-sequence batches subject to ``threshold``.
         max_input_token_length: Hard truncation limit per sequence. Sequences longer
                                 than this are silently truncated.
-        threshold:              Maximum spike probability tolerated per candidate
-                                batch size. Lower values are more conservative (fewer
-                                OOMs, slightly more padding waste). Default 0.005
-                                means only accept candidates with <0.5% predicted
-                                probability of exceeding 90% GPU utilisation.
+        threshold:              Maximum allowed regressor prediction when comparing a
+                                candidate batch to the first ``batch_size`` batch.
+                                The model is trained so that about ``1.0`` means
+                                "as memory-heavy as that first batch"; values above
+                                ``1.0`` mean heavier than the baseline (OOM risk).
+                                Only candidates with prediction ≤ ``threshold`` are
+                                kept; the largest kept size is used. Default ``0.75``
+                                caps predicted load below that 1.0 reference. Lower =
+                                more conservative; higher = larger batches, more risk.
+
         shuffle:                If True, shuffle the order of the pre-built batches.
                                 Sequences within each batch remain length-similar.
         shuffle_seed:           Seed for the random number generator used to shuffle
@@ -462,6 +469,7 @@ def build_dynamic_batch_dataloader(
         shuffle_keep_first_n=shuffle_keep_first_n,
         friendly_batch_size=friendly_batch_size,
         dynamic_batch_mode=dynamic_batch_mode,
+        debug=debug,
     )
 
     if debug:

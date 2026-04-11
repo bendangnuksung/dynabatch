@@ -30,6 +30,15 @@ def sample_texts(sample_size: int = 200):
     return lines[:sample_size]
 
 
+@pytest.fixture(scope="session")
+def sample_texts_5000(sample_size: int = 5000):
+    path = _DATA_DIR / "human_written_data_ru_en.en"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = [line for line in lines if line.strip()]
+    random.shuffle(lines)
+    return lines[:sample_size]
+
+
 class MockTokenizer:
     """Lightweight HuggingFace-compatible tokenizer backed by whitespace splitting."""
 
@@ -99,6 +108,44 @@ class MockTokenizer:
         return result
 
 
+class WordTokenizer(MockTokenizer):
+    def __call__(
+        self,
+        text: str | list[str] | None = None,
+        text_pair=None,
+        padding=False,
+        truncation=False,
+        max_length=None,
+        return_tensors=None,
+        return_offsets_mapping=False,
+        **kwargs,
+    ):
+        tokenized = [t.split() for t in text]
+        token_ids = [[hash(w) % 1000 + 1 for w in tokens] for tokens in tokenized]
+        r = {
+            "input_ids": token_ids,
+            "attention_mask": [[1] * len(ids) for ids in token_ids],
+        }
+
+        if return_offsets_mapping:
+            all_offsets = []
+            for original_text, words in zip(text, tokenized):
+                offsets = []
+                pos = 0
+                for word in words:
+                    idx = original_text.find(word, pos)
+                    if idx != -1:
+                        offsets.append((idx, idx + len(word)))
+                        pos = idx + len(word)
+                    else:
+                        offsets.append((0, 0))
+                if max_length is not None:
+                    offsets += [(0, 0)] * (max_length - len(offsets))
+                all_offsets.append(offsets)
+            r["offset_mapping"] = all_offsets
+        return r
+
+
 @pytest.fixture(scope="session")
 def mock_tokenizer_session():
     return MockTokenizer()
@@ -109,33 +156,47 @@ def mock_tokenizer():
     return MockTokenizer()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def fast_classifier():
-    """
-    Replace the HistGradientBoostingClassifier loaded at module level with a
-    trivial stub for the duration of the test session.
+@pytest.fixture(scope="session")
+def mock_word_tokenizer_session():
+    return WordTokenizer()
 
-    The real classifier takes ~1.5 s per predict_proba call; with ~100 batches
-    per 200-text sampler that becomes 150 s per test.  Tests exercise batching
-    logic and pipeline correctness, not the classifier's numeric output, so a
-    stub that always returns 'safe' (low spike probability) is sufficient.
+
+@pytest.fixture(scope="session", autouse=True)
+def fast_regressor():
     """
+    Replace the XGBRegressor loaded at module level with a trivial stub for the
+    test session.
+
+    The real model is fast enough per row, but many sampler batches multiply
+    work; tests target batching and DataLoader behavior, not regressor scores.
+    A stub that predicts 0.0 makes every candidate pass typical thresholds
+    (e.g. default 0.75), matching a maximally permissive sizing choice.
+    """
+    import numpy as np
+
     import dynabatch.main as _main
 
-    real_clf = _main._CLASSIFIER
+    real_reg = _main._REGRESSOR
+    feature_names = list(real_reg.get_booster().feature_names)
 
-    class _StubClassifier:
-        feature_names_in_ = real_clf.feature_names_in_
+    class _StubBooster:
+        def __init__(self, names: list[str]):
+            self.feature_names = names
 
-        def predict_proba(self, df):
-            import numpy as np
+    class _StubRegressor:
+        def __init__(self, names: list[str]):
+            self._booster = _StubBooster(names)
 
-            n = len(df)
-            return np.column_stack([np.zeros(n), np.zeros(n)])
+        def get_booster(self):
+            return self._booster
 
-    _main._CLASSIFIER = _StubClassifier()
+        def predict(self, X):
+            n = len(X)
+            return np.zeros(n, dtype=np.float64)
+
+    _main._REGRESSOR = _StubRegressor(feature_names)
     yield
-    _main._CLASSIFIER = real_clf
+    _main._REGRESSOR = real_reg
 
 
 @pytest.fixture(scope="session")
