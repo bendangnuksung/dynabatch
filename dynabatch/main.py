@@ -10,6 +10,7 @@ import xgboost as xgb
 from datasets import Dataset as HuggingFaceDataset
 from datasets import DatasetDict
 from torch.utils.data import DataLoader, Dataset, Sampler
+from tqdm import tqdm
 
 from dynabatch.utils import get_hardware_friendly_batch_size
 
@@ -207,34 +208,41 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         remaining_char_lengths = sorted_char_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
 
-        while len(remaining_token_lengths):
-            optimal_size = _select_optimal_batch_size(
-                token_lengths=remaining_token_lengths,
-                word_lengths=remaining_word_lengths,
-                char_lengths=remaining_char_lengths,
-                baseline_features=baseline_features,
-                threshold=self.threshold,
-                candidate_batch_sizes=candidate_batch_sizes,
-            )
-            if self.friendly_batch_size:
-                optimal_size = get_hardware_friendly_batch_size(optimal_size)
+        total_remaining = len(remaining_token_lengths)
+        with tqdm(
+            total=total_remaining,
+            desc="Step 2: building dynamic batches",
+            unit="seq",
+        ) as pbar:
+            while len(remaining_token_lengths):
+                optimal_size = _select_optimal_batch_size(
+                    token_lengths=remaining_token_lengths,
+                    word_lengths=remaining_word_lengths,
+                    char_lengths=remaining_char_lengths,
+                    baseline_features=baseline_features,
+                    threshold=self.threshold,
+                    candidate_batch_sizes=candidate_batch_sizes,
+                )
+                if self.friendly_batch_size:
+                    optimal_size = get_hardware_friendly_batch_size(optimal_size)
 
-            # is_last
-            if len(remaining_token_lengths) <= optimal_size:
-                optimal_size = len(remaining_token_lengths)
-            batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
-            if self.shuffle:
-                random.shuffle(batch_indices)
-            batches.append(batch_indices)
+                # is_last
+                if len(remaining_token_lengths) <= optimal_size:
+                    optimal_size = len(remaining_token_lengths)
+                batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
+                if self.shuffle:
+                    random.shuffle(batch_indices)
+                batches.append(batch_indices)
 
-            remaining_token_lengths = remaining_token_lengths[optimal_size:]
-            remaining_word_lengths = remaining_word_lengths[optimal_size:]
-            remaining_char_lengths = remaining_char_lengths[optimal_size:]
-            next_start_idx += optimal_size
+                remaining_token_lengths = remaining_token_lengths[optimal_size:]
+                remaining_word_lengths = remaining_word_lengths[optimal_size:]
+                remaining_char_lengths = remaining_char_lengths[optimal_size:]
+                next_start_idx += optimal_size
+                pbar.update(optimal_size)
 
-            if self.debug:
-                print(f"Batch N: {len(batches)} \t|\t Batch Size: {optimal_size}")
-                print("-" * 40)
+                if self.debug:
+                    print(f"Batch N: {len(batches)} \t|\t Batch Size: {optimal_size}")
+                    print("-" * 40)
 
         return batches
 
@@ -343,6 +351,7 @@ def compute_lengths(
         remove_columns=datasets["data"].column_names,
         batched=True,
         batch_size=100,
+        desc="Step 1: tokenizing and measuring lengths",
     )
     df = datasets["data"].to_pandas()
     token_lengths = df["token_lengths"].tolist()

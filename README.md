@@ -35,6 +35,8 @@ If both behave similarly, dynabatch is probably not your bottleneck.
 
 ## Quick Start
 
+This example shows the API shape, but to actually see dynabatch do something useful, `texts` should usually be a fairly large collection with varied sequence lengths. With only a few short examples, it will behave correctly, but you will not really see the throughput benefit.
+
 ```python
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -49,6 +51,8 @@ texts = [
     "A much longer sentence that will tokenize to more input tokens.",
     "Short one",
 ]
+
+# In real use, `texts` should typically contain many examples with varied lengths.
 
 dataloader = build_dynamic_batch_dataloader(
     texts=texts,
