@@ -164,19 +164,18 @@ def mock_word_tokenizer_session():
 @pytest.fixture(scope="session", autouse=True)
 def fast_regressor():
     """
-    Replace the XGBRegressor loaded at module level with a trivial stub for the
-    test session.
+    Replace the XGBRegressor with a trivial stub for the test session.
 
     The real model is fast enough per row, but many sampler batches multiply
     work; tests target batching and DataLoader behavior, not regressor scores.
-    A stub that predicts 0.0 makes every candidate pass typical thresholds
-    (e.g. default 0.75), matching a maximally permissive sizing choice.
+    A stub that predicts 0.0 makes every candidate pass typical thresholds,
+    matching a maximally permissive sizing choice.
     """
     import numpy as np
 
-    import dynabatch.main as _main
+    import dynabatch.regressor as _reg_mod
 
-    real_reg = _main._REGRESSOR
+    real_reg = _reg_mod.get_regressor()
     feature_names = list(real_reg.get_booster().feature_names)
 
     class _StubBooster:
@@ -191,12 +190,11 @@ def fast_regressor():
             return self._booster
 
         def predict(self, X):
-            n = len(X)
-            return np.zeros(n, dtype=np.float64)
+            return np.zeros(len(X), dtype=np.float64)
 
-    _main._REGRESSOR = _StubRegressor(feature_names)
+    _reg_mod._regressor = _StubRegressor(feature_names)
     yield
-    _main._REGRESSOR = real_reg
+    _reg_mod._regressor = real_reg
 
 
 @pytest.fixture(scope="session")

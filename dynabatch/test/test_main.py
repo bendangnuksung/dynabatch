@@ -1,9 +1,11 @@
-"""Tests for dynabatch/main.py internals and public components."""
+"""Tests for dynabatch internals and public components."""
 
 import numpy as np
 import pytest
 
-from dynabatch.main import MaxTokenBatchSampler, TextDataset, _collate_fn, _select_optimal_batch_size, compute_lengths
+from dynabatch.main import TextDataset, _collate_fn, compute_lengths
+from dynabatch.regressor import build_baseline_features, select_optimal_batch_size
+from dynabatch.sampler import MaxTokenBatchSampler
 
 # ---------------------------------------------------------------------------
 # TextDataset
@@ -74,7 +76,6 @@ def test_compute_lengths_positive_values(precomputed_lengths):
 
 
 def test_compute_lengths_bounded_by_max_length(sample_texts, mock_tokenizer):
-    # Run a fresh call with a tight max_length to verify truncation behavior
     token_lengths, _, _, _ = compute_lengths(sample_texts[:10], mock_tokenizer, max_length=4)
     for tl in token_lengths:
         assert tl <= 4
@@ -87,7 +88,7 @@ def test_compute_lengths_truncated_texts_are_strings(precomputed_lengths):
 
 
 # ---------------------------------------------------------------------------
-# _select_optimal_batch_size
+# select_optimal_batch_size
 # ---------------------------------------------------------------------------
 
 # Representative sorted descending values (longest first), as in the sampler.
@@ -96,40 +97,11 @@ _TOKEN_LENGTHS = np.array(_TOKEN_SEQ, dtype=np.int64)
 _WORD_LENGTHS = np.array([max(1, t // 2) for t in _TOKEN_SEQ], dtype=np.int64)
 _CHAR_LENGTHS = np.array([t * 5 for t in _TOKEN_SEQ], dtype=np.int64)
 _BASELINE_BS = 2
-_CANDIDATE_BATCH_SIZES = [2, 3, 4, 5, 6]
+_CANDIDATE_BATCH_SIZES = np.array([2, 3, 4, 5, 6])
 # Remaining sequences after the first (baseline) batch — matches sampler calls.
 _TOKEN_REM = _TOKEN_LENGTHS[_BASELINE_BS:]
 _WORD_REM = _WORD_LENGTHS[_BASELINE_BS:]
 _CHAR_REM = _CHAR_LENGTHS[_BASELINE_BS:]
-
-
-def _baseline_features_for_candidates(
-    token_lengths: np.ndarray,
-    word_lengths: np.ndarray,
-    char_lengths: np.ndarray,
-    min_batch_size: int,
-    candidate_batch_sizes: list[int],
-) -> dict:
-    """Mirror ``MaxTokenBatchSampler._build_dynamic_batches`` baseline block."""
-    tl0 = token_lengths[:min_batch_size]
-    wl0 = word_lengths[:min_batch_size]
-    cl0 = char_lengths[:min_batch_size]
-    n = len(candidate_batch_sizes)
-    return {
-        "batch_size_x": [min_batch_size] * n,
-        "token_mean_x": [tl0.mean()] * n,
-        "token_std_x": [tl0.std()] * n,
-        "token_min_x": [tl0.min()] * n,
-        "token_median_x": [int(np.median(tl0))] * n,
-        "token_mode_x": [int(np.bincount(tl0).argmax())] * n,
-        "token_sum_x": [tl0.sum()] * n,
-        "token_max_x": [tl0.max()] * n,
-        "word_std_x": [wl0.std()] * n,
-        "word_min_x": [wl0.min()] * n,
-        "word_mode_x": [int(np.bincount(wl0).argmax())] * n,
-        "word_sum_x": [wl0.sum()] * n,
-        "char_sum_x": [cl0.sum()] * n,
-    }
 
 
 def _call_select_optimal(
@@ -140,14 +112,14 @@ def _call_select_optimal(
     char_lengths=None,
     candidate_batch_sizes=None,
     baseline_bs=None,
-):
+) -> int:
     tl = _TOKEN_REM if token_lengths is None else token_lengths
     wl = _WORD_REM if word_lengths is None else word_lengths
     cl = _CHAR_REM if char_lengths is None else char_lengths
     cands = _CANDIDATE_BATCH_SIZES if candidate_batch_sizes is None else candidate_batch_sizes
     bs = _BASELINE_BS if baseline_bs is None else baseline_bs
-    baseline = _baseline_features_for_candidates(_TOKEN_LENGTHS, _WORD_LENGTHS, _CHAR_LENGTHS, bs, cands)
-    return _select_optimal_batch_size(
+    baseline = build_baseline_features(_TOKEN_LENGTHS, _WORD_LENGTHS, _CHAR_LENGTHS, bs, len(cands))
+    return select_optimal_batch_size(
         token_lengths=tl,
         word_lengths=wl,
         char_lengths=cl,
@@ -164,19 +136,19 @@ def test_select_optimal_batch_size_returns_int():
 
 def test_select_optimal_batch_size_bounded():
     result = _call_select_optimal()
-    assert 1 <= result <= max(_CANDIDATE_BATCH_SIZES)
+    assert 1 <= result <= int(max(_CANDIDATE_BATCH_SIZES))
 
 
 def test_select_optimal_batch_size_fallback_to_baseline():
-    """With threshold=-1.0 no candidate passes; returns baseline batch size from features."""
+    """With threshold=-1.0 no candidate passes; returns baseline batch size."""
     result = _call_select_optimal(threshold=-1.0)
     assert result == _BASELINE_BS
 
 
 def test_select_optimal_batch_size_permissive_threshold():
-    """Stub regressor predicts 0; all candidates pass — largest candidate is chosen."""
+    """Stub regressor predicts 0; all candidates pass — largest is chosen."""
     result = _call_select_optimal(threshold=1.0)
-    assert result == max(_CANDIDATE_BATCH_SIZES)
+    assert result == int(max(_CANDIDATE_BATCH_SIZES))
     assert result >= _BASELINE_BS
 
 
@@ -192,7 +164,6 @@ def _make_sampler(
         token_lengths=token_lengths,
         word_lengths=word_lengths,
         char_lengths=char_lengths,
-        max_input_length=64,
         min_batch_size=min_batch_size,
         shuffle=shuffle,
         shuffle_seed=seed,
@@ -239,12 +210,10 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
     token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
     sampler_no_shuffle = _make_sampler(token_lengths, word_lengths, char_lengths, shuffle=False)
 
-    # shuffle_keep_first_n=0 ensures ALL batches are eligible for reordering
     sampler_shuffle = MaxTokenBatchSampler(
         token_lengths=token_lengths,
         word_lengths=word_lengths,
         char_lengths=char_lengths,
-        max_input_length=64,
         min_batch_size=2,
         shuffle=True,
         shuffle_seed=0,
@@ -254,11 +223,8 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
     unshuffled = list(sampler_no_shuffle)
     shuffled = list(sampler_shuffle)
 
-    # All indices still covered after shuffle
     assert sorted(idx for batch in shuffled for idx in batch) == list(range(len(sample_texts)))
 
-    # With keep_first_n=0, all batches past index 0 are shuffled; order should differ
-    # (only assert when there are 3+ batches, otherwise shuffle may be identity)
     if len(unshuffled) >= 3:
         assert shuffled != unshuffled, "Shuffle should change batch order with keep_first_n=0"
 
