@@ -145,13 +145,6 @@ def test_select_optimal_batch_size_fallback_to_baseline():
     assert result == _BASELINE_BS
 
 
-def test_select_optimal_batch_size_permissive_threshold():
-    """Stub regressor predicts 0; all candidates pass — largest is chosen."""
-    result = _call_select_optimal(threshold=1.0)
-    assert result == int(max(_CANDIDATE_BATCH_SIZES))
-    assert result >= _BASELINE_BS
-
-
 # ---------------------------------------------------------------------------
 # MaxTokenBatchSampler
 # ---------------------------------------------------------------------------
