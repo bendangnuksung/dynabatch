@@ -49,26 +49,26 @@ def _select_optimal_batch_size(
         "batch_size_y": [],
         "token_mean_y": [],
         "token_std_y": [],
+        "token_sum_y": [],
+        "token_max_y": [],
         # All commented out feature are not used, keeping them for future if we want to use them.
         # "token_min_y": [],
         # "token_median_y": [],
         # "token_mode_y": [],
-        "token_sum_y": [],
-        "token_max_y": [],
         "word_mean_y": [],
-        "word_std_y": [],
-        "word_min_y": [],
-        "word_median_y": [],
-        "word_mode_y": [],
         "word_sum_y": [],
         "word_max_y": [],
+        # "word_std_y": [],
+        # "word_min_y": [],
+        # "word_median_y": [],
+        # "word_mode_y": [],
         # "char_mean_y": [],
         # "char_std_y": [],
         # "char_min_y": [],
         # "char_median_y": [],
         # "char_mode_y": [],
-        "char_sum_y": [],
         # "char_max_y": [],
+        "char_sum_y": [],
     }
 
     for batch_size in candidate_batch_sizes:
@@ -79,43 +79,53 @@ def _select_optimal_batch_size(
 
         features["token_mean_y"].append(tl.mean())
         features["token_std_y"].append(tl.std())
+        features["token_sum_y"].append(tl.sum())
+        features["token_max_y"].append(tl.max())
         # All commented out feature are not used, keeping them for future if we want to use them.
         # features["token_min_y"].append(tl.min())
         # features["token_median_y"].append(np.median(tl).astype(int))
         # features["token_mode_y"].append(np.bincount(tl).argmax())
-        features["token_sum_y"].append(tl.sum())
-        features["token_max_y"].append(tl.max())
 
         features["word_mean_y"].append(wl.mean())
-        features["word_std_y"].append(wl.std())
-        features["word_min_y"].append(wl.min())
-        features["word_median_y"].append(np.median(wl).astype(int))
-        features["word_mode_y"].append(np.bincount(wl).argmax())
         features["word_sum_y"].append(wl.sum())
         features["word_max_y"].append(wl.max())
+        # features["word_std_y"].append(wl.std())
+        # features["word_min_y"].append(wl.min())
+        # features["word_median_y"].append(np.median(wl).astype(int))
+        # features["word_mode_y"].append(np.bincount(wl).argmax())
 
         # features["char_mean_y"].append(cl.mean())
         # features["char_std_y"].append(cl.std())
         # features["char_min_y"].append(cl.min())
         # features["char_median_y"].append(np.median(cl).astype(int))
         # features["char_mode_y"].append(np.bincount(cl).argmax())
-        features["char_sum_y"].append(cl.sum())
         # features["char_max_y"].append(cl.max())
+        features["char_sum_y"].append(cl.sum())
 
     features.update(baseline_features)
     feature_df = pd.DataFrame(features)
 
-    feature_df["token_sum_diff"] = feature_df["token_sum_x"] / feature_df["token_sum_y"]
+    # get diffs features
+    feature_df["batch_size_diff"] = feature_df["batch_size_y"] / feature_df["batch_size_x"]
+    feature_df["token_max_diff"] = feature_df["token_max_y"] / feature_df["token_max_x"]
+    feature_df["token_mean_diff"] = feature_df["token_mean_y"] / feature_df["token_mean_x"]
+    feature_df["token_sum_diff"] = feature_df["token_sum_y"] / feature_df["token_sum_x"]
 
-    feature_df = feature_df[_REGRESSOR.get_booster().feature_names]
+    feature_df["word_max_diff"] = feature_df["word_max_y"] / feature_df["word_max_x"]
+    feature_df["word_mean_diff"] = feature_df["word_mean_y"] / feature_df["word_mean_x"]
+    feature_df["word_sum_diff"] = feature_df["word_sum_y"] / feature_df["word_sum_x"]
 
-    preds_raw = _REGRESSOR.predict(feature_df)
+    feature_df["char_sum_diff"] = feature_df["char_sum_y"] / feature_df["char_sum_x"]
+
+    feature_df_selected = feature_df[_REGRESSOR.get_booster().feature_names]
+
+    preds_raw = _REGRESSOR.predict(feature_df_selected)
     preds = (preds_raw <= threshold).astype(int)
     optimal_batch_size = int(np.max(preds * candidate_batch_sizes))
 
     if optimal_batch_size == 0:
-        return baseline_features["batch_size_x"][0]
-    return optimal_batch_size
+        return baseline_features["batch_size_x"][0], feature_df
+    return optimal_batch_size, feature_df
 
 
 class MaxTokenBatchSampler(Sampler[list[int]]):
@@ -177,29 +187,28 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         baseline_features = {
             "batch_size_x": [self.min_batch_size] * len(candidate_batch_sizes),
             "token_mean_x": [sorted_token_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
-            "token_std_x": [sorted_token_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
-            "token_min_x": [sorted_token_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
-            "token_median_x": [np.median(sorted_token_lengths[: self.min_batch_size]).astype(int)]
-            * len(candidate_batch_sizes),
-            "token_mode_x": [np.bincount(sorted_token_lengths[: self.min_batch_size]).argmax()]
-            * len(candidate_batch_sizes),
             "token_sum_x": [sorted_token_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
             "token_max_x": [sorted_token_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
             # All commented out feature are not used, keeping them for future if we want to use them.
-            # "word_mean_x": [sorted_word_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
-            "word_std_x": [sorted_word_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
-            "word_min_x": [sorted_word_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
-            # "word_median_x": [np.median(sorted_word_lengths[: self.min_batch_size]).astype(int)] * len(candidate_batch_sizes),
-            "word_mode_x": [np.bincount(sorted_word_lengths[: self.min_batch_size]).argmax()]
-            * len(candidate_batch_sizes),
+            # "token_std_x": [sorted_token_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
+            # "token_min_x": [sorted_token_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
+            # "token_median_x": [np.median(sorted_token_lengths[: self.min_batch_size]).astype(int)]
+            # * len(candidate_batch_sizes),
+            # "token_mode_x": [np.bincount(sorted_token_lengths[: self.min_batch_size]).argmax()]
+            # * len(candidate_batch_sizes),
+            "word_mean_x": [sorted_word_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
             "word_sum_x": [sorted_word_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
-            # "word_max_x": [sorted_word_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
+            "word_max_x": [sorted_word_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
+            # "word_std_x": [sorted_word_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
+            # "word_min_x": [sorted_word_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
+            # "word_median_x": [np.median(sorted_word_lengths[: self.min_batch_size]).astype(int)] * len(candidate_batch_sizes),
+            # "word_mode_x": [np.bincount(sorted_word_lengths[: self.min_batch_size]).argmax()] * len(candidate_batch_sizes),
+            "char_sum_x": [sorted_char_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
             # "char_mean_x": [sorted_char_lengths[: self.min_batch_size].mean()] * len(candidate_batch_sizes),
             # "char_std_x": [sorted_char_lengths[: self.min_batch_size].std()] * len(candidate_batch_sizes),
             # "char_min_x": [sorted_char_lengths[: self.min_batch_size].min()] * len(candidate_batch_sizes),
             # "char_median_x": [np.median(sorted_char_lengths[: self.min_batch_size]).astype(int)] * len(candidate_batch_sizes),
             # "char_mode_x": [np.bincount(sorted_char_lengths[: self.min_batch_size]).argmax()] * len(candidate_batch_sizes),
-            "char_sum_x": [sorted_char_lengths[: self.min_batch_size].sum()] * len(candidate_batch_sizes),
             # "char_max_x": [sorted_char_lengths[: self.min_batch_size].max()] * len(candidate_batch_sizes),
         }
 
@@ -209,13 +218,14 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         next_start_idx = self.min_batch_size
 
         total_remaining = len(remaining_token_lengths)
+
         with tqdm(
             total=total_remaining,
             desc="Step 2: building dynamic batches",
             unit="seq",
         ) as pbar:
             while len(remaining_token_lengths):
-                optimal_size = _select_optimal_batch_size(
+                optimal_size, feature_df = _select_optimal_batch_size(
                     token_lengths=remaining_token_lengths,
                     word_lengths=remaining_word_lengths,
                     char_lengths=remaining_char_lengths,
@@ -367,7 +377,7 @@ def build_dynamic_batch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.6,
+    threshold: float = 0.7,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
