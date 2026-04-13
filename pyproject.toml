@@ -18,6 +18,7 @@ dependencies = [
     "datasets",
     "tqdm",
     "xgboost>=3.2.0",
+    "sentencepiece",
 ]
 
 [project.urls]

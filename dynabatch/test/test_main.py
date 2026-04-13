@@ -1,11 +1,148 @@
 """Tests for dynabatch internals and public components."""
 
+import re
+
 import numpy as np
 import pytest
 
 from dynabatch.main import TextDataset, _collate_fn, compute_lengths
 from dynabatch.regressor import build_baseline_features, select_optimal_batch_size
 from dynabatch.sampler import MaxTokenBatchSampler
+
+
+class _SimplePiece:
+    def __init__(self, end: int):
+        self.end = end
+
+
+class _SimpleImmutableProto:
+    def __init__(self, ends: list[int]):
+        self.pieces = [_SimplePiece(end) for end in ends]
+
+
+class _SentencePieceLikeModel:
+    def encode_as_immutable_proto(self, text: str):
+        ends: list[int] = []
+        for match in re.finditer(r"\S+", text):
+            end_char = match.end()
+            ends.append(len(text[:end_char].encode("utf-8")))
+        return _SimpleImmutableProto(ends)
+
+
+class _SentencePieceFallbackTokenizer:
+    def __init__(self):
+        self.sp_model = _SentencePieceLikeModel()
+
+    def __call__(
+        self,
+        text: str | list[str] | None = None,
+        padding=False,
+        truncation=False,
+        max_length=None,
+        return_offsets_mapping=False,
+        return_attention_mask=True,
+        **kwargs,
+    ):
+        if text is None:
+            raise TypeError("text is required")
+        texts = [text] if isinstance(text, str) else list(text)
+
+        tokenized = [t.split() for t in texts]
+        max_text_tokens = None
+        if truncation and max_length is not None:
+            max_text_tokens = max(max_length - 2, 0)
+            tokenized = [tokens[:max_text_tokens] for tokens in tokenized]
+
+        if return_offsets_mapping:
+            raise ValueError("offset mapping unavailable for this tokenizer")
+
+        input_ids = [[101] + [i + 1000 for i, _ in enumerate(tokens)] + [102] for tokens in tokenized]
+        attention_masks = [[1] * len(ids) for ids in input_ids]
+
+        if padding:
+            max_len = max((len(ids) for ids in input_ids), default=0)
+            input_ids = [ids + [0] * (max_len - len(ids)) for ids in input_ids]
+            attention_masks = [mask + [0] * (max_len - len(mask)) for mask in attention_masks]
+
+        if isinstance(text, str):
+            result = {"input_ids": input_ids[0]}
+            if return_attention_mask:
+                result["attention_mask"] = attention_masks[0]
+            return result
+
+        result = {"input_ids": input_ids}
+        if return_attention_mask:
+            result["attention_mask"] = attention_masks
+        return result
+
+    def get_special_tokens_mask(self, token_ids, already_has_special_tokens=True):
+        return [1 if token_id in (101, 102) else 0 for token_id in token_ids]
+
+
+class _SingleOnlyOffsetTokenizer:
+    def __call__(
+        self,
+        text: str | list[str] | None = None,
+        padding=False,
+        truncation=False,
+        max_length=None,
+        return_offsets_mapping=False,
+        **kwargs,
+    ):
+        if text is None:
+            raise TypeError("text is required")
+        if isinstance(text, list):
+            if return_offsets_mapping:
+                raise ValueError("batch offsets unavailable")
+            tokenized = [t.split() for t in text]
+            if truncation and max_length is not None:
+                tokenized = [tokens[:max_length] for tokens in tokenized]
+            input_ids = [[i + 1 for i, _ in enumerate(tokens)] for tokens in tokenized]
+            attention_masks = [[1] * len(ids) for ids in input_ids]
+            if padding:
+                max_len = max((len(ids) for ids in input_ids), default=0)
+                input_ids = [ids + [0] * (max_len - len(ids)) for ids in input_ids]
+                attention_masks = [mask + [0] * (max_len - len(mask)) for mask in attention_masks]
+            return {"input_ids": input_ids, "attention_mask": attention_masks}
+
+        words = text.split()
+        if truncation and max_length is not None:
+            words = words[:max_length]
+
+        input_ids = [i + 1 for i, _ in enumerate(words)]
+        attention_mask = [1] * len(input_ids)
+        result = {"input_ids": input_ids, "attention_mask": attention_mask}
+        if return_offsets_mapping:
+            offsets = []
+            pos = 0
+            for word in words:
+                idx = text.find(word, pos)
+                offsets.append((idx, idx + len(word)))
+                pos = idx + len(word)
+            result["offset_mapping"] = offsets
+        return result
+
+
+class _NoExactOffsetTokenizer:
+    def __call__(
+        self,
+        text: str | list[str] | None = None,
+        return_offsets_mapping=False,
+        **kwargs,
+    ):
+        if return_offsets_mapping:
+            raise ValueError("offset mapping unsupported")
+        if text is None:
+            raise TypeError("text is required")
+        if isinstance(text, str):
+            words = text.split()
+            return {"input_ids": [i + 1 for i, _ in enumerate(words)], "attention_mask": [1] * len(words)}
+        tokenized = [t.split() for t in text]
+        return {
+            "input_ids": [[i + 1 for i, _ in enumerate(tokens)] for tokens in tokenized],
+            "attention_mask": [[1] * len(tokens) for tokens in tokenized],
+        }
+
 
 # ---------------------------------------------------------------------------
 # TextDataset
@@ -85,6 +222,51 @@ def test_compute_lengths_truncated_texts_are_strings(precomputed_lengths):
     _, _, _, truncated_texts = precomputed_lengths
     for t in truncated_texts:
         assert isinstance(t, str)
+
+
+def test_compute_lengths_fallback_sentencepiece_offsets():
+    tokenizer = _SentencePieceFallbackTokenizer()
+    texts = ["alpha beta gamma", "delta epsilon zeta", "你好 世界 再见"]
+
+    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
+        texts,
+        tokenizer=tokenizer,
+        max_length=4,
+        max_workers=1,
+    )
+
+    assert token_lengths == [4, 4, 4]
+    assert truncated_texts[0] == "alpha beta"
+    assert truncated_texts[1] == "delta epsilon"
+    assert truncated_texts[2] == "你好 世界"
+    assert word_lengths == [2, 2, 2]
+    assert char_lengths == [len("alpha beta"), len("delta epsilon"), len("你好 世界")]
+
+
+def test_compute_lengths_fallback_per_example_offsets():
+    tokenizer = _SingleOnlyOffsetTokenizer()
+    texts = ["a b c d", "one two three four"]
+    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
+        texts,
+        tokenizer=tokenizer,
+        max_length=2,
+        max_workers=1,
+    )
+    assert token_lengths == [2, 2]
+    assert truncated_texts == ["a b", "one two"]
+    assert word_lengths == [2, 2]
+    assert char_lengths == [3, 7]
+
+
+def test_compute_lengths_raises_when_no_exact_offset_strategy():
+    tokenizer = _NoExactOffsetTokenizer()
+    with pytest.raises(RuntimeError, match="Unable to compute exact char_lengths/word_lengths"):
+        compute_lengths(
+            ["a b c"],
+            tokenizer=tokenizer,
+            max_length=2,
+            max_workers=1,
+        )
 
 
 # ---------------------------------------------------------------------------

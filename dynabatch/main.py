@@ -28,6 +28,86 @@ class TextDataset(Dataset):
         return {"text": self.texts[idx]}
 
 
+def _compute_char_len_from_offsets(sequence_offsets: list[tuple[int, int]] | list[list[int]]) -> int:
+    real_offsets = [offset for offset in sequence_offsets if tuple(offset) != (0, 0)]
+    return max((int(offset[1]) for offset in real_offsets), default=0)
+
+
+def _bytes_to_char_index(text: str, byte_index: int) -> int:
+    return len(text.encode("utf-8")[:byte_index].decode("utf-8", errors="ignore"))
+
+
+def _extract_single_sequence_offsets(encoded_offsets: Any) -> list[tuple[int, int]] | list[list[int]]:
+    if encoded_offsets is None or len(encoded_offsets) == 0:
+        return []
+    first_item = encoded_offsets[0]
+    if isinstance(first_item, (tuple, list)) and len(first_item) == 2 and not isinstance(first_item[0], (tuple, list)):
+        return encoded_offsets
+    return encoded_offsets[0]
+
+
+def _get_sentencepiece_model(tokenizer: PreTrainedTokenizerBase) -> Any | None:
+    sp_model = getattr(tokenizer, "sp_model", None)
+    if sp_model is not None:
+        return sp_model
+    nested_tokenizer = getattr(tokenizer, "tokenizer", None)
+    if nested_tokenizer is not None:
+        return getattr(nested_tokenizer, "sp_model", None)
+    return None
+
+
+def _get_immutable_proto(sp_model: Any, text: str) -> Any:
+    if hasattr(sp_model, "encode_as_immutable_proto"):
+        return sp_model.encode_as_immutable_proto(text)
+    if hasattr(sp_model, "EncodeAsImmutableProto"):
+        return sp_model.EncodeAsImmutableProto(text)
+    raise AttributeError("SentencePiece model does not support immutable proto offsets.")
+
+
+def _select_length_strategy(texts: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int) -> str:
+    probe_text = texts[0] if texts else ""
+
+    try:
+        probe = tokenizer(
+            text=[probe_text],
+            truncation=True,
+            max_length=max_length,
+            padding=True,
+            return_offsets_mapping=True,
+        )
+        if "offset_mapping" in probe:
+            return "batched_hf_offsets"
+    except Exception:
+        pass
+
+    sp_model = _get_sentencepiece_model(tokenizer)
+    if sp_model is not None:
+        try:
+            _ = _get_immutable_proto(sp_model, probe_text)
+            return "sentencepiece_offsets"
+        except Exception:
+            pass
+
+    try:
+        probe = tokenizer(
+            text=probe_text,
+            truncation=True,
+            max_length=max_length,
+            padding=False,
+            return_offsets_mapping=True,
+        )
+        if "offset_mapping" in probe:
+            return "single_hf_offsets"
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Unable to compute exact char_lengths/word_lengths: tokenizer does not support "
+        "HuggingFace offset_mapping in batch or per-example mode, and no SentencePiece immutable-proto "
+        "offset API was found."
+    )
+
+
 def _collate_fn(
     batch: list[dict],
     tokenizer: PreTrainedTokenizerBase,
@@ -61,15 +141,16 @@ def compute_lengths(
     included in ``truncated_texts``.
     """
 
-    def _compute_lengths_for_batch(data: list[str]):
+    strategy = _select_length_strategy(texts=texts, tokenizer=tokenizer, max_length=max_length)
+
+    def _compute_lengths_for_batch_with_hf_offsets(data: list[str]):
         encoded = tokenizer(
             text=data["texts"], truncation=True, max_length=max_length, padding=True, return_offsets_mapping=True
         )
-        token_lengths = [sum(mask) for mask in encoded["attention_mask"]]
+        token_lengths = [int(sum(mask)) for mask in encoded["attention_mask"]]
         chopped_char_lengths = []
         for sequence_offsets in encoded["offset_mapping"]:
-            end_chars = [offset[1] for offset in sequence_offsets]
-            chopped_char_lengths.append(max(end_chars))
+            chopped_char_lengths.append(_compute_char_len_from_offsets(sequence_offsets))
         chopped_texts = [text[: chopped_char_lengths[i]] for i, text in enumerate(data["texts"])]
         chopped_word_lengths = [len(text.split()) for text in chopped_texts]
         return {
@@ -79,18 +160,101 @@ def compute_lengths(
             "texts": chopped_texts,
         }
 
-    df = pd.DataFrame(texts).rename(columns={0: "texts"})
-    df["words"] = df["texts"].apply(lambda x: len(x.split()))
-    df["chars"] = df["texts"].apply(lambda x: len(x))
+    def _compute_lengths_for_batch_with_sentencepiece(data: list[str]):
+        sp_model = _get_sentencepiece_model(tokenizer)
+        if sp_model is None:
+            raise RuntimeError("SentencePiece fallback selected but tokenizer has no accessible sentencepiece model.")
+
+        encoded = tokenizer(
+            text=data["texts"],
+            truncation=True,
+            max_length=max_length,
+            padding=True,
+            return_attention_mask=True,
+        )
+        token_lengths = [int(sum(mask)) for mask in encoded["attention_mask"]]
+        chopped_char_lengths = []
+        for text in data["texts"]:
+            encoded_single = tokenizer(
+                text=text,
+                truncation=True,
+                max_length=max_length,
+                padding=False,
+                return_attention_mask=False,
+            )
+            input_ids = encoded_single["input_ids"]
+            if isinstance(input_ids, list) and input_ids and isinstance(input_ids[0], list):
+                input_ids = input_ids[0]
+
+            special_mask = tokenizer.get_special_tokens_mask(input_ids, already_has_special_tokens=True)
+            kept_text_piece_count = int(sum(1 for value in special_mask if value == 0))
+
+            immutable_proto = _get_immutable_proto(sp_model, text)
+            pieces = list(immutable_proto.pieces)
+            if kept_text_piece_count <= 0 or not pieces:
+                chopped_char_lengths.append(0)
+                continue
+
+            capped_piece_count = min(kept_text_piece_count, len(pieces))
+            end_byte = int(pieces[capped_piece_count - 1].end)
+            chopped_char_lengths.append(_bytes_to_char_index(text, end_byte))
+
+        chopped_texts = [text[: chopped_char_lengths[i]] for i, text in enumerate(data["texts"])]
+        chopped_word_lengths = [len(text.split()) for text in chopped_texts]
+        return {
+            "token_lengths": token_lengths,
+            "word_lengths": chopped_word_lengths,
+            "char_lengths": chopped_char_lengths,
+            "texts": chopped_texts,
+        }
+
+    def _compute_lengths_per_example_with_hf_offsets(data: dict[str, str]):
+        text = data["texts"]
+        encoded = tokenizer(
+            text=text,
+            truncation=True,
+            max_length=max_length,
+            padding=False,
+            return_offsets_mapping=True,
+        )
+        attention_mask = encoded["attention_mask"]
+        if isinstance(attention_mask, list) and attention_mask and isinstance(attention_mask[0], list):
+            attention_mask = attention_mask[0]
+        token_length = int(sum(attention_mask))
+
+        sequence_offsets = _extract_single_sequence_offsets(encoded["offset_mapping"])
+        chopped_char_length = _compute_char_len_from_offsets(sequence_offsets)
+        chopped_text = text[:chopped_char_length]
+        return {
+            "token_lengths": token_length,
+            "word_lengths": len(chopped_text.split()),
+            "char_lengths": chopped_char_length,
+            "texts": chopped_text,
+        }
+
+    df = pd.DataFrame({"texts": texts})
     datasets = DatasetDict({"data": HuggingFaceDataset.from_pandas(df)})
-    datasets = datasets.map(
-        _compute_lengths_for_batch,
-        num_proc=max_workers,
-        remove_columns=datasets["data"].column_names,
-        batched=True,
-        batch_size=100,
-        desc="Step 1: tokenizing and measuring lengths",
-    )
+    if strategy == "single_hf_offsets":
+        datasets = datasets.map(
+            _compute_lengths_per_example_with_hf_offsets,
+            num_proc=max_workers,
+            remove_columns=datasets["data"].column_names,
+            batched=False,
+            desc="Step 1: tokenizing and measuring lengths",
+        )
+    else:
+        map_fn = _compute_lengths_for_batch_with_hf_offsets
+        if strategy == "sentencepiece_offsets":
+            map_fn = _compute_lengths_for_batch_with_sentencepiece
+
+        datasets = datasets.map(
+            map_fn,
+            num_proc=max_workers,
+            remove_columns=datasets["data"].column_names,
+            batched=True,
+            batch_size=100,
+            desc="Step 1: tokenizing and measuring lengths",
+        )
     df = datasets["data"].to_pandas()
     return (
         df["token_lengths"].tolist(),
@@ -168,7 +332,7 @@ def build_dynamic_batch_dataloader(
                                 when shuffling, to ensure the first few batches always
                                 fit within the established memory envelope.
         friendly_batch_size:    If True, round batch sizes to the nearest power of 2
-                                (or 3 × power of 2). Recommended for training workloads.
+                                (or 3 x power of 2). Recommended for training workloads.
         num_workers:            Number of parallel data-loading workers.
         debug:                  If True, disable parallel workers and print per-batch
                                 sizing decisions. Use only during development.
