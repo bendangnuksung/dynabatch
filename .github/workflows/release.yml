@@ -11,7 +11,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment:
-      name: pypi
+      name: release
       url: https://pypi.org/project/dynabatch/
     steps:
       - uses: actions/checkout@v5
