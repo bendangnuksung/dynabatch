@@ -191,6 +191,8 @@ build_dynamic_batch_dataloader(
     num_workers: int = 4,
     debug: bool = False,
     dynamic_batch_mode: bool = True,
+    smooth_batches: bool = True,
+    smooth_batches_max_diff: float = 0.2,
     apply_template_func: Callable | None = None,
     **tokenizer_kwargs,
 ) -> DataLoader
@@ -211,6 +213,8 @@ build_dynamic_batch_dataloader(
 | `num_workers` | Worker count used by the returned `DataLoader`. If set to `0` or `None` outside debug mode, the implementation falls back to CPU count. |
 | `debug` | Disables worker parallelism in the final loader to make debugging easier. |
 | `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, the loader reduces to Max Token Sampler/Batching with fixed batch size. This is the main switch for testing whether the dynamic part is actually helping your workload. |
+| `smooth_batches` | If `True`, applies a smoothing pass after dynamic sizing so adjacent batches do not jump too abruptly in size. |
+| `smooth_batches_max_diff` | Controls the largest allowed growth between adjacent batches as a fraction of `batch_size`. Example: `0.2` allows at most `0.2 * batch_size` extra items per step (still bounded by max batch size). |
 | `apply_template_func` | Optional function applied to the batch texts before final tokenization. If your template adds tokens, make sure `max_input_token_length` still makes sense after templating. |
 | `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation. |
 

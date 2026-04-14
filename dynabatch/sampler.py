@@ -1,6 +1,7 @@
 """Internal module: length-sorted batch sampler with optional regressor-guided sizing."""
 
 import random
+from itertools import chain
 from typing import Iterator
 
 import numpy as np
@@ -55,6 +56,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle_keep_first_n: int = 5,
         friendly_batch_size: bool = False,
         dynamic_batch_mode: bool = True,
+        smooth_batches: bool = True,
+        smooth_batches_max_diff: float = 0.2,
         debug: bool = False,
     ):
         sorted_indices = sorted(
@@ -62,7 +65,6 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
             key=lambda i: token_lengths[i],
             reverse=True,
         )
-        self.min_batch_size = min_batch_size
         self.threshold = threshold
         self.shuffle = shuffle
         self.shuffle_seed = shuffle_seed
@@ -70,12 +72,120 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.friendly_batch_size = friendly_batch_size
         self.dynamic_batch_mode = dynamic_batch_mode
         self.debug = debug
+        self.smooth_batches = smooth_batches
+        self.smooth_batches_max_diff = smooth_batches_max_diff
 
         self.batch_start_range = 1.0
         self.batch_end_range = max(max_batch_range, 1.0)
+        self.min_batch_size = min_batch_size
+        self.max_batch_size = int(self.batch_end_range * self.min_batch_size)
         self._n_steps = int((self.batch_end_range - self.batch_start_range) * _CANDIDATE_STEPS_PER_UNIT)
 
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
+
+    def _smooth_batches(self, batches: list[list[int]]) -> list[list[int]]:
+        """
+        Re-balance dynamic batch lengths to avoid large step changes.
+
+        The max increase from one batch to the next is capped by
+        ``min_batch_size * smooth_batches_max_diff`` (and by ``max_batch_size``).
+        Any overflow that cannot fit under that cap is carried to later batches,
+        so all original items are preserved.
+        """
+        if not self.smooth_batches:
+            return batches
+
+        all_items = list(chain.from_iterable(batches))
+        original_lengths = [len(batch) for batch in batches]
+
+        max_growth_step = int(self.min_batch_size * self.smooth_batches_max_diff)
+
+        smooth_lengths = []
+        carry_over = 0
+        last_length = None
+
+        for length in original_lengths:
+            target_length = length + carry_over
+
+            if last_length is None:
+                actual_length = min(target_length, self.max_batch_size)
+            else:
+                allowed_max = min(last_length + max_growth_step, self.max_batch_size)
+                actual_length = min(target_length, allowed_max)
+
+            smooth_lengths.append(actual_length)
+            carry_over = target_length - actual_length
+            last_length = actual_length
+
+        while carry_over > 0:
+            allowed_max = min(last_length + max_growth_step, self.max_batch_size)
+            actual_length = min(carry_over, allowed_max)
+
+            smooth_lengths.append(actual_length)
+            carry_over -= actual_length
+            last_length = actual_length
+
+        smooth_batches_list = []
+        current_idx = 0
+        for length in smooth_lengths:
+            smooth_batches_list.append(all_items[current_idx : current_idx + length])
+            current_idx += length
+
+        assert sum(smooth_lengths) == sum(original_lengths)
+
+        if self.debug:
+            print("\nSmoothening   \t  Before Batch Size\t| After Batch Size")
+            for i in range(len(smooth_batches_list)):
+                len_before = len(batches[i]) if i < len(batches) else 0
+                print(f"Batch {i+1}:\t\t\t {len_before} \t|\t {len(smooth_batches_list[i])}")
+                print("-" * 60)
+        return smooth_batches_list
+
+    def _arrange_to_friendly_batch_size(self, batches: list[list[int]]) -> list[list[int]]:
+        if not self.friendly_batch_size:
+            return batches
+
+        all_items = list(chain.from_iterable(batches))
+        friendly_batch_lengths = []
+        original_lengths = [len(batch) for batch in batches]
+        max_length = max(original_lengths)
+        remaining_items = len(all_items)
+
+        for i, length in enumerate(original_lengths):
+            if i == len(original_lengths) - 1:
+                length = min((length + remaining_items), max_length)
+            friendly_length = get_hardware_friendly_batch_size(length)
+            friendly_batch_lengths.append(friendly_length)
+            remaining_items -= friendly_length
+
+        while remaining_items > 0:
+            length = min(remaining_items, max_length)
+            friendly_length = get_hardware_friendly_batch_size(length)
+            remaining_items -= friendly_length
+
+            # If only 1 or 2 items remaining, add them to the last batch
+            if remaining_items == 1 or remaining_items == 2:
+                friendly_length = friendly_length + remaining_items
+                remaining_items = 0
+
+            friendly_batch_lengths.append(friendly_length)
+
+        friendly_batches = []
+        current_idx = 0
+        for length in friendly_batch_lengths:
+            friendly_batches.append(all_items[current_idx : current_idx + length])
+            current_idx += length
+
+        assert sum(friendly_batch_lengths) == sum(original_lengths)
+
+        if self.debug:
+            print("\nFriendly Batching \t  Before Size\t| After Size")
+            for i in range(len(friendly_batches)):
+                len_before = len(batches[i]) if i < len(batches) else 0
+                print(f"Batch {i+1}:\t\t\t {len_before} \t|\t {len(friendly_batches[i])}")
+                print("-" * 60)
+
+        return friendly_batches
 
     def _build_dynamic_batches(
         self,
@@ -119,15 +229,11 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                     threshold=self.threshold,
                     candidate_batch_sizes=candidate_batch_sizes,
                 )
-                if self.friendly_batch_size:
-                    optimal_size = get_hardware_friendly_batch_size(optimal_size)
 
                 if len(remaining_token) <= optimal_size:
                     optimal_size = len(remaining_token)
 
                 batch_indices = [sorted_indices[next_start_idx + i] for i in range(optimal_size)]
-                if self.shuffle:
-                    random.shuffle(batch_indices)
                 batches.append(batch_indices)
 
                 remaining_token = remaining_token[optimal_size:]
@@ -137,8 +243,13 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 pbar.update(optimal_size)
 
                 if self.debug:
-                    print(f"Batch N: {len(batches)} \t|\t Batch Size: {optimal_size}")
+                    print(f"Batch {len(batches)} \t|\t Batch Size: {optimal_size}")
                     print("-" * 40)
+
+        batches = self._smooth_batches(batches)
+        batches = self._arrange_to_friendly_batch_size(batches)
+        if self.shuffle:
+            [random.shuffle(batch) for batch in batches]
 
         return batches
 

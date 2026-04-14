@@ -98,14 +98,10 @@ def _select_length_strategy(texts: list[str], tokenizer: PreTrainedTokenizerBase
 def _collate_fn(
     batch: list[dict],
     tokenizer: PreTrainedTokenizerBase,
-    apply_template_func: Callable | None = None,
     **tokenizer_kwargs: Any,
 ) -> dict[str, torch.Tensor]:
     """Pads only to the longest sequence *in this batch*, not globally."""
     texts = [item["text"] for item in batch]
-    if apply_template_func is not None:
-        batch = apply_template_func(texts)
-
     tokens = tokenizer(
         text=texts,
         padding=True,
@@ -246,7 +242,8 @@ def build_dynamic_batch_dataloader(
     num_workers: int = 4,
     debug: bool = False,
     dynamic_batch_mode: bool = True,
-    apply_template_func: Callable | None = None,
+    smooth_batches: bool = True,
+    smooth_batches_max_diff: float = 0.2,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
     """
@@ -306,9 +303,13 @@ def build_dynamic_batch_dataloader(
                                 sizing decisions. Use only during development.
         dynamic_batch_mode:     If False, all batches use exactly ``batch_size`` items
                                 (equivalent to a standard MaxToken sampler).
-        apply_template_func:    Optional function applied to the raw texts before
-                                tokenization during collation.  Account for any extra
-                                tokens it adds when setting ``max_input_token_length``.
+        smooth_batches:         If True, apply a post-pass that smooths adjacent batch
+                                sizes to avoid abrupt size jumps.
+        smooth_batches_max_diff: Maximum allowed per-step growth between adjacent
+                                batches, expressed as a fraction of ``batch_size``.
+                                For example, ``0.2`` allows at most ``0.2 * batch_size``
+                                additional items per step (still capped by
+                                ``max_batch_range``/sampler max size).
         **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
                                 during collation (e.g. ``max_length``,
                                 ``add_special_tokens``).
@@ -319,8 +320,9 @@ def build_dynamic_batch_dataloader(
     """
     if debug:
         num_workers = 0
-    elif not num_workers:
-        num_workers = os.cpu_count() or 1
+    else:
+        available_workers = os.cpu_count() or 1
+        num_workers = min(available_workers, num_workers)
 
     token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
         texts, tokenizer, max_input_token_length, max_workers=num_workers
@@ -338,7 +340,9 @@ def build_dynamic_batch_dataloader(
         shuffle_keep_first_n=shuffle_keep_first_n,
         friendly_batch_size=friendly_batch_size,
         dynamic_batch_mode=dynamic_batch_mode,
+        smooth_batches=smooth_batches,
+        smooth_batches_max_diff=smooth_batches_max_diff,
         debug=debug,
     )
-    collate = partial(_collate_fn, tokenizer=tokenizer, apply_template_func=apply_template_func, **tokenizer_kwargs)
+    collate = partial(_collate_fn, tokenizer=tokenizer, **tokenizer_kwargs)
     return DataLoader(dataset, batch_sampler=sampler, collate_fn=collate, num_workers=num_workers)
