@@ -37,6 +37,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         shuffle_seed:         RNG seed used for batch-order shuffling.
         shuffle_keep_first_n: Number of leading batches kept in original order
                               even when shuffling.
+        keep_batch_size_even: Round batch sizes to even numbers.
         friendly_batch_size:  Round batch sizes to powers of 2 (or 3x powers of 2).
         dynamic_batch_mode:   When False, all batches use exactly ``min_batch_size``
                               items (equivalent to MaxTokenSampler).

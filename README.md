@@ -138,6 +138,7 @@ This is useful when you want throughput from dynamic batching without letting on
 For training:
 
 - if you want hardware friendly sizes (`2^n` or `3 * 2^n`), enable `friendly_batch_size=True`
+- if you want to avoid odd batch sizes, keep `keep_batch_size_even=True` (default)
 - if you want shuffled batches, set `shuffle=True`
 - `shuffle_keep_first_n=3` means the first 3 hardest batches stay unshuffled and only the later batches are shuffled
 - keeping the earliest hardest batches fixed is useful because it lets you hit the worst memory cases early and find OOM problems sooner
@@ -188,6 +189,7 @@ build_dynamic_batch_dataloader(
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
     friendly_batch_size: bool = False,
+    keep_batch_size_even: bool = True,
     num_workers: int = 4,
     debug: bool = False,
     dynamic_batch_mode: bool = True,
@@ -210,6 +212,7 @@ build_dynamic_batch_dataloader(
 | `shuffle_seed` | Seed used when shuffling. |
 | `shuffle_keep_first_n` | Keeps the first few hardest batches in original order before shuffling the rest. For example, `3` means the first 3 longest/hardest batches remain fixed so you can detect early OOM issues quickly. |
 | `friendly_batch_size` | Rounds chosen batch sizes down to hardware-friendly values such as powers of two or `3 * 2^n`. Useful for some training setups. |
+| `keep_batch_size_even` | If `True`, rounds chosen batch sizes to even numbers. Enabled by default and useful for setups that prefer even per-step microbatch sizes. |
 | `num_workers` | Worker count used by the returned `DataLoader`. If set to `0` or `None` outside debug mode, the implementation falls back to CPU count. |
 | `debug` | Disables worker parallelism in the final loader to make debugging easier. |
 | `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, the loader reduces to Max Token Sampler/Batching with fixed batch size. This is the main switch for testing whether the dynamic part is actually helping your workload. |
