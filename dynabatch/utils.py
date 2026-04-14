@@ -160,3 +160,15 @@ def get_hardware_friendly_batch_size(target_size: int) -> int:
         max_3_times_power_of_2 = 3 * (2 ** int(math.log2(target_size / 3)))
 
     return max(max_power_of_2, max_3_times_power_of_2)
+
+
+def get_even_batch_size(target_size: int) -> int:
+    """
+    Returns the largest number <= target_size that is an even number.
+    """
+    if target_size < 1:
+        raise ValueError("Batch size must be at least 1.")
+    elif target_size == 1:
+        return 1
+
+    return target_size if target_size % 2 == 0 else target_size - 1

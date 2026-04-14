@@ -239,6 +239,7 @@ def build_dynamic_batch_dataloader(
     shuffle_seed: int = 21,
     shuffle_keep_first_n: int = 3,
     friendly_batch_size: bool = False,
+    keep_batch_size_even: bool = True,
     num_workers: int = 4,
     debug: bool = False,
     dynamic_batch_mode: bool = True,
@@ -298,6 +299,7 @@ def build_dynamic_batch_dataloader(
                                 fit within the established memory envelope.
         friendly_batch_size:    If True, round batch sizes to the nearest power of 2
                                 (or 3 x power of 2). Recommended for training workloads.
+        keep_batch_size_even:   If True, round batch sizes to the nearest even number.
         num_workers:            Number of parallel data-loading workers.
         debug:                  If True, disable parallel workers and print per-batch
                                 sizing decisions. Use only during development.
@@ -342,6 +344,7 @@ def build_dynamic_batch_dataloader(
         dynamic_batch_mode=dynamic_batch_mode,
         smooth_batches=smooth_batches,
         smooth_batches_max_diff=smooth_batches_max_diff,
+        keep_batch_size_even=keep_batch_size_even,
         debug=debug,
     )
     collate = partial(_collate_fn, tokenizer=tokenizer, **tokenizer_kwargs)

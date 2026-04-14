@@ -9,7 +9,7 @@ from torch.utils.data import Sampler
 from tqdm import tqdm
 
 from dynabatch.regressor import build_baseline_features, select_optimal_batch_size
-from dynabatch.utils import get_hardware_friendly_batch_size
+from dynabatch.utils import get_even_batch_size, get_hardware_friendly_batch_size
 
 # Number of candidate batch size steps generated per unit of batch range.
 # E.g. range (1.0 → 2.0) produces 20 candidates before deduplication.
@@ -54,6 +54,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         max_batch_range: float = 2.0,
         shuffle_seed: int = 21,
         shuffle_keep_first_n: int = 5,
+        keep_batch_size_even: bool = False,
         friendly_batch_size: bool = False,
         dynamic_batch_mode: bool = True,
         smooth_batches: bool = True,
@@ -74,6 +75,7 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         self.debug = debug
         self.smooth_batches = smooth_batches
         self.smooth_batches_max_diff = smooth_batches_max_diff
+        self.keep_batch_size_even = keep_batch_size_even
 
         self.batch_start_range = 1.0
         self.batch_end_range = max(max_batch_range, 1.0)
@@ -141,12 +143,24 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                 print("-" * 60)
         return smooth_batches_list
 
-    def _arrange_to_friendly_batch_size(self, batches: list[list[int]]) -> list[list[int]]:
-        if not self.friendly_batch_size:
-            return batches
+    def _arrange_batches(self, batches: list[list[int]], arrange_type: str) -> list[list[int]]:
+        """
+        Returns the batches arranged to have a friendly batch size.
+        arrange_type can be "hardware_friendly" or "even".
+        """
+        if arrange_type == "hardware_friendly":
+            if not self.friendly_batch_size:
+                return batches
+            func = get_hardware_friendly_batch_size
+        elif arrange_type == "even":
+            if not self.keep_batch_size_even:
+                return batches
+            func = get_even_batch_size
+        else:
+            raise ValueError(f"Invalid arrange type: {arrange_type}")
 
         all_items = list(chain.from_iterable(batches))
-        friendly_batch_lengths = []
+        arranged_batch_lengths = []
         original_lengths = [len(batch) for batch in batches]
         max_length = max(original_lengths)
         remaining_items = len(all_items)
@@ -154,38 +168,40 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
         for i, length in enumerate(original_lengths):
             if i == len(original_lengths) - 1:
                 length = min((length + remaining_items), max_length)
-            friendly_length = get_hardware_friendly_batch_size(length)
-            friendly_batch_lengths.append(friendly_length)
-            remaining_items -= friendly_length
+                length = length if length <= remaining_items else remaining_items
+            arranged_length = func(length)
+            arranged_batch_lengths.append(arranged_length)
+            remaining_items -= arranged_length
 
         while remaining_items > 0:
             length = min(remaining_items, max_length)
-            friendly_length = get_hardware_friendly_batch_size(length)
-            remaining_items -= friendly_length
+            arranged_length = func(length)
+            remaining_items -= arranged_length
 
-            # If only 1 or 2 items remaining, add them to the last batch
-            if remaining_items == 1 or remaining_items == 2:
-                friendly_length = friendly_length + remaining_items
+            # If adding the remaining items to the arranged type length would not exceed the max length,
+            # add them to the last batch
+            if (arranged_length + remaining_items) <= max_length:
+                arranged_length = arranged_length + remaining_items
                 remaining_items = 0
 
-            friendly_batch_lengths.append(friendly_length)
+            arranged_batch_lengths.append(arranged_length)
 
-        friendly_batches = []
+        arranged_batches = []
         current_idx = 0
-        for length in friendly_batch_lengths:
-            friendly_batches.append(all_items[current_idx : current_idx + length])
+        for length in arranged_batch_lengths:
+            arranged_batches.append(all_items[current_idx : current_idx + length])
             current_idx += length
 
-        assert sum(friendly_batch_lengths) == sum(original_lengths)
+        assert sum(arranged_batch_lengths) == sum(original_lengths)
 
         if self.debug:
-            print("\nFriendly Batching \t  Before Size\t| After Size")
-            for i in range(len(friendly_batches)):
+            print(f"\n{arrange_type.upper()} \t\t  Before Size\t| After Size")
+            for i in range(len(arranged_batches)):
                 len_before = len(batches[i]) if i < len(batches) else 0
-                print(f"Batch {i+1}:\t\t\t {len_before} \t|\t {len(friendly_batches[i])}")
+                print(f"Batch {i+1}:\t\t\t {len_before} \t|\t {len(arranged_batches[i])}")
                 print("-" * 60)
 
-        return friendly_batches
+        return arranged_batches
 
     def _build_dynamic_batches(
         self,
@@ -247,7 +263,8 @@ class MaxTokenBatchSampler(Sampler[list[int]]):
                     print("-" * 40)
 
         batches = self._smooth_batches(batches)
-        batches = self._arrange_to_friendly_batch_size(batches)
+        batches = self._arrange_batches(batches, arrange_type="hardware_friendly")
+        batches = self._arrange_batches(batches, arrange_type="even")
         if self.shuffle:
             [random.shuffle(batch) for batch in batches]
 
