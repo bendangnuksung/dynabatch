@@ -195,12 +195,25 @@ def compute_lengths(
                 chopped_char_lengths.append(0)
                 continue
 
+            # If all text pieces are kept, no truncation happened.
+            # SentencePiece piece end offsets can still undershoot raw-text length
+            # due to normalization/whitespace handling, so keep full text here.
+            if kept_text_piece_count >= len(pieces):
+                chopped_char_lengths.append(len(text))
+                continue
+
             capped_piece_count = min(kept_text_piece_count, len(pieces))
             end_byte = int(pieces[capped_piece_count - 1].end)
-            chopped_char_lengths.append(_bytes_to_char_index(text, end_byte))
+            chopped_char_length = _bytes_to_char_index(text, end_byte)
+            # Preserve trailing whitespace/newlines that immediately follow the
+            # last kept token boundary.
+            while chopped_char_length < len(text) and text[chopped_char_length].isspace():
+                chopped_char_length += 1
+            chopped_char_lengths.append(chopped_char_length)
 
         chopped_texts = [text[: chopped_char_lengths[i]] for i, text in enumerate(data["texts"])]
         chopped_word_lengths = [len(text.split()) for text in chopped_texts]
+
         return {
             "token_lengths": token_lengths,
             "word_lengths": chopped_word_lengths,
