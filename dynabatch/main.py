@@ -88,19 +88,6 @@ def _select_length_strategy(texts: list[str], tokenizer: PreTrainedTokenizerBase
         except Exception:
             pass
 
-    try:
-        probe = tokenizer(
-            text=probe_text,
-            truncation=True,
-            max_length=max_length,
-            padding=False,
-            return_offsets_mapping=True,
-        )
-        if "offset_mapping" in probe:
-            return "single_hf_offsets"
-    except Exception:
-        pass
-
     raise RuntimeError(
         "Unable to compute exact char_lengths/word_lengths: tokenizer does not support "
         "HuggingFace offset_mapping in batch or per-example mode, and no SentencePiece immutable-proto "
@@ -221,53 +208,21 @@ def compute_lengths(
             "texts": chopped_texts,
         }
 
-    def _compute_lengths_per_example_with_hf_offsets(data: dict[str, str]):
-        text = data["texts"]
-        encoded = tokenizer(
-            text=text,
-            truncation=True,
-            max_length=max_length,
-            padding=False,
-            return_offsets_mapping=True,
-        )
-        attention_mask = encoded["attention_mask"]
-        if isinstance(attention_mask, list) and attention_mask and isinstance(attention_mask[0], list):
-            attention_mask = attention_mask[0]
-        token_length = int(sum(attention_mask))
-
-        sequence_offsets = _extract_single_sequence_offsets(encoded["offset_mapping"])
-        chopped_char_length = _compute_char_len_from_offsets(sequence_offsets)
-        chopped_text = text[:chopped_char_length]
-        return {
-            "token_lengths": token_length,
-            "word_lengths": len(chopped_text.split()),
-            "char_lengths": chopped_char_length,
-            "texts": chopped_text,
-        }
-
     df = pd.DataFrame({"texts": texts})
     datasets = DatasetDict({"data": HuggingFaceDataset.from_pandas(df)})
-    if strategy == "single_hf_offsets":
-        datasets = datasets.map(
-            _compute_lengths_per_example_with_hf_offsets,
-            num_proc=max_workers,
-            remove_columns=datasets["data"].column_names,
-            batched=False,
-            desc="Step 1: tokenizing and measuring lengths",
-        )
-    else:
-        map_fn = _compute_lengths_for_batch_with_hf_offsets
-        if strategy == "sentencepiece_offsets":
-            map_fn = _compute_lengths_for_batch_with_sentencepiece
 
-        datasets = datasets.map(
-            map_fn,
-            num_proc=max_workers,
-            remove_columns=datasets["data"].column_names,
-            batched=True,
-            batch_size=100,
-            desc="Step 1: tokenizing and measuring lengths",
-        )
+    map_fn = _compute_lengths_for_batch_with_hf_offsets
+    if strategy == "sentencepiece_offsets":
+        map_fn = _compute_lengths_for_batch_with_sentencepiece
+
+    datasets = datasets.map(
+        map_fn,
+        num_proc=max_workers,
+        remove_columns=datasets["data"].column_names,
+        batched=True,
+        batch_size=100,
+        desc="Step 1: tokenizing and measuring lengths",
+    )
     df = datasets["data"].to_pandas()
     return (
         df["token_lengths"].tolist(),
@@ -282,7 +237,7 @@ def build_dynamic_batch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.7,
+    threshold: float = 0.65,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,

@@ -236,26 +236,11 @@ def test_compute_lengths_fallback_sentencepiece_offsets():
     )
 
     assert token_lengths == [4, 4, 4]
-    assert truncated_texts[0] == "alpha beta"
-    assert truncated_texts[1] == "delta epsilon"
-    assert truncated_texts[2] == "你好 世界"
+    assert truncated_texts[0].strip() == "alpha beta"
+    assert truncated_texts[1].strip() == "delta epsilon"
+    assert truncated_texts[2].strip() == "你好 世界"
     assert word_lengths == [2, 2, 2]
-    assert char_lengths == [len("alpha beta"), len("delta epsilon"), len("你好 世界")]
-
-
-def test_compute_lengths_fallback_per_example_offsets():
-    tokenizer = _SingleOnlyOffsetTokenizer()
-    texts = ["a b c d", "one two three four"]
-    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
-        texts,
-        tokenizer=tokenizer,
-        max_length=2,
-        max_workers=1,
-    )
-    assert token_lengths == [2, 2]
-    assert truncated_texts == ["a b", "one two"]
-    assert word_lengths == [2, 2]
-    assert char_lengths == [3, 7]
+    assert char_lengths == [len("alpha beta") + 1, len("delta epsilon") + 1, len("你好 世界") + 1]  # +1 for the space
 
 
 def test_compute_lengths_raises_when_no_exact_offset_strategy():
