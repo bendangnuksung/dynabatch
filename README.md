@@ -75,16 +75,14 @@ with torch.inference_mode():
   <thead>
     <tr>
       <th align="left">Notebooks</th>
-      <th align="left">Links</th>
       <th align="left">Comparison</th>
       <th align="left">Notes</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td valign="top"><strong>Inference Comparison</strong></td>
-      <td valign="top"><a href="https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb">🟠🟡 Colab</a></td>
-      <td valign="top"><img src="images/inference_generate_comparitive_analysis_table.png" alt="Inference comparison table" width="816"></td>
+      <td valign="top">Inference<br><a href="https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb">🟠🟡Colab</a></td>
+      <td valign="top"><img src="images/inference_generate_comparitive_analysis_table.png" alt="Inference comparison table" width="2000"></td>
       <td valign="top">
         <ul>
           <li>Ran on Colab <strong>T4</strong></li>
@@ -95,8 +93,7 @@ with torch.inference_mode():
       </td>
     </tr>
     <tr>
-      <td valign="top"><strong>Training Comparison</strong></td>
-      <td valign="top">🟠🟡 Not available yet</td>
+      <td valign="top">Training<br>🟠🟡NotYet</td>
       <td valign="top">—</td>
       <td valign="top">—</td>
     </tr>
