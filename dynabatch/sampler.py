@@ -16,7 +16,7 @@ from dynabatch.utils import get_even_batch_size, get_hardware_friendly_batch_siz
 _CANDIDATE_STEPS_PER_UNIT = 20
 
 
-class MaxTokenBatchSampler(Sampler[list[int]]):
+class DynaBatchSampler(Sampler[list[int]]):
     """
     A batch sampler that sorts sequences by token length and optionally uses
     a pre-trained regressor to increase batch sizes for shorter sequences,

@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 import dynabatch.main as _main_module
-from dynabatch import build_dynamic_batch_dataloader
+from dynabatch import build_dynabatch_dataloader
 from dynabatch.utils import merge_outputs, split_batch
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ class _SimpleModel(nn.Module):
 
 
 def _build_loader(sample_texts, mock_tokenizer, shuffle=False):
-    return build_dynamic_batch_dataloader(
+    return build_dynabatch_dataloader(
         texts=sample_texts,
         tokenizer=mock_tokenizer,
         batch_size=_BATCH_SIZE,
@@ -56,7 +56,7 @@ def _build_loader(sample_texts, mock_tokenizer, shuffle=False):
 
 
 def _build_static_loader(sample_texts, mock_tokenizer, shuffle=False):
-    return build_dynamic_batch_dataloader(
+    return build_dynabatch_dataloader(
         texts=sample_texts,
         tokenizer=mock_tokenizer,
         batch_size=_BATCH_SIZE,
@@ -133,7 +133,7 @@ def test_dataloader_max_batch_range_kwarg(sample_texts, mock_tokenizer):
     from dynabatch.main import compute_lengths
 
     _, _, _, truncated_texts = compute_lengths(sample_texts, mock_tokenizer, max_length=_MAX_TOKEN_LEN)
-    loader = build_dynamic_batch_dataloader(
+    loader = build_dynabatch_dataloader(
         texts=sample_texts,
         tokenizer=mock_tokenizer,
         batch_size=_BATCH_SIZE,

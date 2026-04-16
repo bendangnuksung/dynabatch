@@ -7,7 +7,7 @@ import pytest
 
 from dynabatch.main import TextDataset, _collate_fn, compute_lengths
 from dynabatch.regressor import build_baseline_features, select_optimal_batch_size
-from dynabatch.sampler import MaxTokenBatchSampler
+from dynabatch.sampler import DynaBatchSampler
 
 
 class _SimplePiece:
@@ -319,8 +319,8 @@ def test_select_optimal_batch_size_fallback_to_baseline():
 
 def _make_sampler(
     token_lengths, word_lengths, char_lengths, min_batch_size=2, shuffle=False, seed=21
-) -> MaxTokenBatchSampler:
-    return MaxTokenBatchSampler(
+) -> DynaBatchSampler:
+    return DynaBatchSampler(
         token_lengths=token_lengths,
         word_lengths=word_lengths,
         char_lengths=char_lengths,
@@ -370,7 +370,7 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
     token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
     sampler_no_shuffle = _make_sampler(token_lengths, word_lengths, char_lengths, shuffle=False)
 
-    sampler_shuffle = MaxTokenBatchSampler(
+    sampler_shuffle = DynaBatchSampler(
         token_lengths=token_lengths,
         word_lengths=word_lengths,
         char_lengths=char_lengths,
@@ -390,10 +390,10 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
 
 
 def test_batch_size_increased(sample_texts_5000, mock_word_tokenizer_session):
-    from dynabatch.main import build_dynamic_batch_dataloader
+    from dynabatch.main import build_dynabatch_dataloader
 
     min_batch_size = 32
-    loader = build_dynamic_batch_dataloader(
+    loader = build_dynabatch_dataloader(
         texts=sample_texts_5000,
         tokenizer=mock_word_tokenizer_session,
         batch_size=min_batch_size,

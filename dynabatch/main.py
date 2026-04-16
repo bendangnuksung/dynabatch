@@ -8,7 +8,7 @@ from datasets import Dataset as HuggingFaceDataset
 from datasets import DatasetDict
 from torch.utils.data import DataLoader, Dataset
 
-from dynabatch.sampler import MaxTokenBatchSampler
+from dynabatch.sampler import DynaBatchSampler
 
 # Avoid a hard dependency on transformers just for the type hint.
 PreTrainedTokenizerBase = Any
@@ -228,7 +228,56 @@ def compute_lengths(
     )
 
 
-def build_dynamic_batch_dataloader(
+def _effective_num_workers(num_workers: int, debug: bool) -> int:
+    if debug:
+        return 0
+    available_workers = os.cpu_count() or 1
+    return min(available_workers, num_workers)
+
+
+def _build_dynabatch_sampler_and_texts(
+    texts: list[str],
+    tokenizer: PreTrainedTokenizerBase,
+    batch_size: int,
+    max_input_token_length: int,
+    threshold: float,
+    max_batch_range: float,
+    shuffle: bool,
+    shuffle_seed: int,
+    shuffle_keep_first_n: int,
+    friendly_batch_size: bool,
+    keep_batch_size_even: bool,
+    num_workers: int,
+    debug: bool,
+    dynamic_batch_mode: bool,
+    smooth_batches: bool,
+    smooth_batches_max_diff: float,
+) -> tuple[DynaBatchSampler, list[str], int]:
+    num_workers = _effective_num_workers(num_workers, debug)
+    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
+        texts, tokenizer, max_input_token_length, max_workers=num_workers
+    )
+    sampler = DynaBatchSampler(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        min_batch_size=batch_size,
+        shuffle=shuffle,
+        threshold=threshold,
+        max_batch_range=max_batch_range,
+        shuffle_seed=shuffle_seed,
+        shuffle_keep_first_n=shuffle_keep_first_n,
+        friendly_batch_size=friendly_batch_size,
+        dynamic_batch_mode=dynamic_batch_mode,
+        smooth_batches=smooth_batches,
+        smooth_batches_max_diff=smooth_batches_max_diff,
+        keep_batch_size_even=keep_batch_size_even,
+        debug=debug,
+    )
+    return sampler, truncated_texts, num_workers
+
+
+def dynabatch_sampler(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
@@ -245,12 +294,9 @@ def build_dynamic_batch_dataloader(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
-    **tokenizer_kwargs: Any,
-) -> DataLoader:
+) -> DynaBatchSampler:
     """
-    A drop-in replacement for a standard DataLoader that eliminates padding waste
-    by using a pre-trained regressor to dynamically size each batch while staying
-    near the memory envelope established by the first batch.
+    Build a length-sorted batch sampler with optional regressor-guided sizing.
 
     How it works:
         1. All sequences are sorted by token length, longest first.
@@ -263,8 +309,8 @@ def build_dynamic_batch_dataloader(
            first batch**. The prediction scale is centred around ``1.0``, meaning
            "same memory pressure as the first batch"; values above ``1.0`` signal
            higher pressure and OOM risk. The sampler picks the **largest** candidate
-           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.7``
-           leaves a comfortable margin below the ``1.0`` reference point.
+           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.65``
+           leaves a margin below the ``1.0`` reference point.
 
         The regressor was trained on empirical data: actual GPU memory usage
         recorded across many (model, batch_size, max_length) combinations. It
@@ -287,9 +333,8 @@ def build_dynamic_batch_dataloader(
                                 About ``1.0`` means "as memory-heavy as the first
                                 batch"; above ``1.0`` means heavier (OOM risk).
                                 Only candidates with prediction ≤ ``threshold`` are
-                                kept; the largest kept size is used. Default ``0.7``
-                                caps predicted load below the 1.0 reference. Lower =
-                                more conservative; higher = larger batches, more risk.
+                                kept; the largest kept size is used. Lower = more
+                                conservative; higher = larger batches, more risk.
         max_batch_range:        Maximum batch-size multiplier relative to ``batch_size``.
         shuffle:                If True, shuffle the order of the pre-built batches.
                                 Sequences within each batch remain length-similar.
@@ -300,7 +345,8 @@ def build_dynamic_batch_dataloader(
         friendly_batch_size:    If True, round batch sizes to the nearest power of 2
                                 (or 3 x power of 2). Recommended for training workloads.
         keep_batch_size_even:   If True, round batch sizes to the nearest even number.
-        num_workers:            Number of parallel data-loading workers.
+        num_workers:            Number of parallel workers for the length pre-pass
+                                (not a PyTorch DataLoader; see ``build_dynabatch_dataloader``).
         debug:                  If True, disable parallel workers and print per-batch
                                 sizing decisions. Use only during development.
         dynamic_batch_mode:     If False, all batches use exactly ``batch_size`` items
@@ -312,40 +358,78 @@ def build_dynamic_batch_dataloader(
                                 For example, ``0.2`` allows at most ``0.2 * batch_size``
                                 additional items per step (still capped by
                                 ``max_batch_range``/sampler max size).
-        **tokenizer_kwargs:     Extra keyword arguments forwarded to the tokenizer
-                                during collation (e.g. ``max_length``,
-                                ``add_special_tokens``).
 
     Returns:
-        A DataLoader yielding dicts with keys ``input_ids``, ``attention_mask``,
-        ``texts`` (and any other keys your tokenizer returns), as PyTorch tensors.
+        A ``DynaBatchSampler`` instance.
     """
-    if debug:
-        num_workers = 0
-    else:
-        available_workers = os.cpu_count() or 1
-        num_workers = min(available_workers, num_workers)
+    sampler, _, _ = _build_dynabatch_sampler_and_texts(
+        texts,
+        tokenizer,
+        batch_size,
+        max_input_token_length,
+        threshold,
+        max_batch_range,
+        shuffle,
+        shuffle_seed,
+        shuffle_keep_first_n,
+        friendly_batch_size,
+        keep_batch_size_even,
+        num_workers,
+        debug,
+        dynamic_batch_mode,
+        smooth_batches,
+        smooth_batches_max_diff,
+    )
+    return sampler
 
-    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
-        texts, tokenizer, max_input_token_length, max_workers=num_workers
+
+def build_dynabatch_dataloader(
+    texts: list[str],
+    tokenizer: PreTrainedTokenizerBase,
+    batch_size: int,
+    max_input_token_length: int = 512,
+    threshold: float = 0.65,
+    max_batch_range: float = 2.0,
+    shuffle: bool = False,
+    shuffle_seed: int = 21,
+    shuffle_keep_first_n: int = 3,
+    friendly_batch_size: bool = False,
+    keep_batch_size_even: bool = True,
+    num_workers: int = 4,
+    debug: bool = False,
+    dynamic_batch_mode: bool = True,
+    smooth_batches: bool = True,
+    smooth_batches_max_diff: float = 0.2,
+    **tokenizer_kwargs: Any,
+) -> DataLoader:
+    """
+    Drop-in ``DataLoader`` that uses the same dynamic batching as ``dynabatch_sampler``.
+
+    Sampler arguments are documented on ``dynabatch_sampler``. Remaining keyword
+    arguments are passed through to the tokenizer inside ``collate_fn`` (for example
+    ``truncation=True``, ``max_length=…``) in addition to ``padding=True`` and
+    ``return_tensors="pt"``.
+    """
+    sampler, truncated_texts, num_workers = _build_dynabatch_sampler_and_texts(
+        texts,
+        tokenizer,
+        batch_size,
+        max_input_token_length,
+        threshold,
+        max_batch_range,
+        shuffle,
+        shuffle_seed,
+        shuffle_keep_first_n,
+        friendly_batch_size,
+        keep_batch_size_even,
+        num_workers,
+        debug,
+        dynamic_batch_mode,
+        smooth_batches,
+        smooth_batches_max_diff,
     )
+
     dataset = TextDataset(truncated_texts)
-    sampler = MaxTokenBatchSampler(
-        token_lengths=token_lengths,
-        word_lengths=word_lengths,
-        char_lengths=char_lengths,
-        min_batch_size=batch_size,
-        shuffle=shuffle,
-        threshold=threshold,
-        max_batch_range=max_batch_range,
-        shuffle_seed=shuffle_seed,
-        shuffle_keep_first_n=shuffle_keep_first_n,
-        friendly_batch_size=friendly_batch_size,
-        dynamic_batch_mode=dynamic_batch_mode,
-        smooth_batches=smooth_batches,
-        smooth_batches_max_diff=smooth_batches_max_diff,
-        keep_batch_size_even=keep_batch_size_even,
-        debug=debug,
-    )
+
     collate = partial(_collate_fn, tokenizer=tokenizer, **tokenizer_kwargs)
     return DataLoader(dataset, batch_sampler=sampler, collate_fn=collate, num_workers=num_workers)
