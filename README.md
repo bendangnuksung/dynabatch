@@ -35,39 +35,17 @@ If both behave similarly, dynabatch is probably not your bottleneck.
 
 ## Quick Start
 
-This example shows the API shape, but to actually see dynabatch do something useful, `texts` should usually be a fairly large collection with varied sequence lengths. With only a few short examples, it will behave correctly, but you will not really see the throughput benefit.
+`dynabatch_sampler` is a **batch sampler**: use `DataLoader(..., batch_sampler=sampler)` (omit `batch_size`). Align `dataset` with `texts` and tokenizer max length with `max_input_token_length`. See `notebooks/dynabatch_inference_comparison.ipynb` for a full cell.
 
 ```python
-import torch
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-from dynabatch import build_dynamic_batch_dataloader
+from torch.utils.data import DataLoader
+from dynabatch import dynabatch_sampler
 
-tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
-model = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M").cuda()
-device = torch.device("cuda")
-
-texts = [
-    "Hello world",
-    "A much longer sentence that will tokenize to more input tokens.",
-    "Short one",
-]
-
-# In real use, `texts` should typically contain many examples with varied lengths.
-
-dataloader = build_dynamic_batch_dataloader(
-    texts=texts,
-    tokenizer=tokenizer,
-    batch_size=32,
-    max_input_token_length=256,
-)
-
-with torch.inference_mode():
-    for batch in dataloader:
-        outputs = model.generate(
-            input_ids=batch["input_ids"].to(device),
-            attention_mask=batch["attention_mask"].to(device),
-        )
+sampler = dynabatch_sampler(texts, tokenizer, batch_size=32, max_input_token_length=256)
+loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
 ```
+
+Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_token_length=256)`** for a built-in loader.
 
 ## Notebooks 
 
@@ -104,24 +82,20 @@ with torch.inference_mode():
 ## More Examples
 
 ### Compare dynamic vs static batching
-
-Use the same baseline `batch_size`, then toggle `dynamic_batch_mode`.
-
 ```python
-dynamic_loader = build_dynamic_batch_dataloader(
-    texts=texts,
-    tokenizer=tokenizer,
-    batch_size=32,
-    max_input_token_length=256,
-    dynamic_batch_mode=True,
-)
+from torch.utils.data import DataLoader
+from dynabatch import dynabatch_sampler
 
-static_loader = build_dynamic_batch_dataloader(
-    texts=texts,
-    tokenizer=tokenizer,
-    batch_size=32,
-    max_input_token_length=256,
-    dynamic_batch_mode=False,
+kw = dict(texts=texts, tokenizer=tokenizer, batch_size=32, max_input_token_length=256)
+dynamic = DataLoader(
+    dataset,
+    batch_sampler=dynabatch_sampler(**kw, dynamic_batch_mode=True),
+    collate_fn=collate_fn,
+)
+static = DataLoader(
+    dataset,
+    batch_sampler=dynabatch_sampler(**kw, dynamic_batch_mode=False),
+    collate_fn=collate_fn,
 )
 ```
 
@@ -130,7 +104,7 @@ static_loader = build_dynamic_batch_dataloader(
 - Max Token Sampler/Batching
 - plus optional dynamic batch growth on top
 
-That makes `dynamic_batch_mode=False` useful as an ablation or sanity check.
+That makes `dynamic_batch_mode=False` useful as a sanity check.
 
 ### OOM-safe generation with fallback splitting
 
@@ -138,25 +112,20 @@ The regressor is empirical, so it can still occasionally predict a batch size th
 
 ```python
 import torch
-from dynabatch import build_dynamic_batch_dataloader, generate_with_oom_fallback
+from torch.utils.data import DataLoader
+from dynabatch import dynabatch_sampler, generate_with_oom_fallback
 
+loader = DataLoader(
+    dataset,
+    batch_sampler=dynabatch_sampler(texts, tokenizer, batch_size=32, max_input_token_length=256),
+    collate_fn=collate_fn,
+)
 device = torch.device("cuda")
 
-dataloader = build_dynamic_batch_dataloader(
-    texts=texts,
-    tokenizer=tokenizer,
-    batch_size=32,
-    max_input_token_length=256,
-)
-
 with torch.inference_mode():
-    for batch in dataloader:
+    for batch in loader:
         generated_tokens, did_fallback = generate_with_oom_fallback(
-            model,
-            batch,
-            min_batch_size=32,
-            device=device,
-            max_new_tokens=128,
+            model, batch, min_batch_size=32, device=device, max_new_tokens=128,
         )
 
         if did_fallback:
@@ -176,14 +145,21 @@ For training:
 - keeping the earliest hardest batches fixed is useful because it lets you hit the worst memory cases early and find OOM problems sooner
 
 ```python
-train_loader = build_dynamic_batch_dataloader(
-    texts=texts,
-    tokenizer=tokenizer,
-    batch_size=16,
-    max_input_token_length=256,
-    friendly_batch_size=True,
-    shuffle=True,
-    shuffle_keep_first_n=3,
+from torch.utils.data import DataLoader
+from dynabatch import dynabatch_sampler
+
+train_loader = DataLoader(
+    dataset,
+    batch_sampler=dynabatch_sampler(
+        texts,
+        tokenizer,
+        batch_size=16,
+        max_input_token_length=256,
+        friendly_batch_size=True,
+        shuffle=True,
+        shuffle_keep_first_n=3,
+    ),
+    collate_fn=collate_fn,
 )
 ```
 
@@ -207,15 +183,17 @@ So you should choose `batch_size` as the largest batch of your longest inputs th
 
 ## API
 
-### `build_dynamic_batch_dataloader`
+### `dynabatch_sampler`
+
+Returns `DynaBatchSampler` for `DataLoader(..., batch_sampler=sampler)`. Same sizing/shuffle kwargs as `build_dynabatch_dataloader`; `dataset` indices must match `texts`.
 
 ```python
-build_dynamic_batch_dataloader(
+dynabatch_sampler(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.6,
+    threshold: float = 0.65,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
@@ -227,7 +205,31 @@ build_dynamic_batch_dataloader(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
-    apply_template_func: Callable | None = None,
+) -> DynaBatchSampler
+```
+
+### `build_dynabatch_dataloader`
+
+Same batching as `dynabatch_sampler`, returns a `DataLoader` with built-in collation; extra kwargs go to the tokenizer.
+
+```python
+build_dynabatch_dataloader(
+    texts: list[str],
+    tokenizer: PreTrainedTokenizerBase,
+    batch_size: int,
+    max_input_token_length: int = 512,
+    threshold: float = 0.65,
+    max_batch_range: float = 2.0,
+    shuffle: bool = False,
+    shuffle_seed: int = 21,
+    shuffle_keep_first_n: int = 3,
+    friendly_batch_size: bool = False,
+    keep_batch_size_even: bool = True,
+    num_workers: int = 4,
+    debug: bool = False,
+    dynamic_batch_mode: bool = True,
+    smooth_batches: bool = True,
+    smooth_batches_max_diff: float = 0.2,
     **tokenizer_kwargs,
 ) -> DataLoader
 ```
@@ -245,13 +247,12 @@ build_dynamic_batch_dataloader(
 | `shuffle_keep_first_n` | Keeps the first few hardest batches in original order before shuffling the rest. For example, `3` means the first 3 longest/hardest batches remain fixed so you can detect early OOM issues quickly. |
 | `friendly_batch_size` | Rounds chosen batch sizes down to hardware-friendly values such as powers of two or `3 * 2^n`. Useful for some training setups. |
 | `keep_batch_size_even` | If `True`, rounds chosen batch sizes to even numbers. Enabled by default and useful for setups that prefer even per-step microbatch sizes. |
-| `num_workers` | Worker count used by the returned `DataLoader`. If set to `0` or `None` outside debug mode, the implementation falls back to CPU count. |
-| `debug` | Disables worker parallelism in the final loader to make debugging easier. |
+| `num_workers` | Worker count for the length pre-pass (`datasets.map`) and for the returned `DataLoader`. |
+| `debug` | Disables parallel workers for the length pass and enables verbose sampler logging. |
 | `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, the loader reduces to Max Token Sampler/Batching with fixed batch size. This is the main switch for testing whether the dynamic part is actually helping your workload. |
 | `smooth_batches` | If `True`, applies a smoothing pass after dynamic sizing so adjacent batches do not jump too abruptly in size. |
 | `smooth_batches_max_diff` | Controls the largest allowed growth between adjacent batches as a fraction of `batch_size`. Example: `0.2` allows at most `0.2 * batch_size` extra items per step (still bounded by max batch size). |
-| `apply_template_func` | Optional function applied to the batch texts before final tokenization. If your template adds tokens, make sure `max_input_token_length` still makes sense after templating. |
-| `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation. |
+| `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation (for example `truncation=True`). |
 
 The returned `DataLoader` yields dictionaries containing `input_ids`, `attention_mask`, `texts`, and any other tokenizer outputs.
 
@@ -264,10 +265,3 @@ In short:
 - the training data stores real GPU memory usage from many batch configurations
 - the target is memory usage relative to the first batch
 - the notebook trains an `XGBRegressor` to predict that ratio from token, word, and character statistics of the baseline batch and candidate batch
-
-## Notebooks
-
-- Inference comparison notebook: `notebooks/dynabatch_inference_comparison.ipynb`
-- Regressor training notebook: `train_regressor/train_regression.ipynb`
-
-Some older notebook cells may still show stale argument names or older thresholds, so prefer the current Python API in `dynabatch/main.py` for exact runtime behavior.
