@@ -86,6 +86,10 @@ class DynaBatchSampler(Sampler[list[int]]):
 
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
 
+    def _get_safe_smooth_batch_max_diff(self) -> int:
+        minimum_diff = 1 / max(1.0, self.max_batch_size - self.min_batch_size)
+        return max(minimum_diff, self.smooth_batches_max_diff)
+
     def _smooth_batches(self, batches: list[list[int]]) -> list[list[int]]:
         """
         Re-balance dynamic batch lengths to avoid large step changes.
@@ -101,7 +105,8 @@ class DynaBatchSampler(Sampler[list[int]]):
         all_items = list(chain.from_iterable(batches))
         original_lengths = [len(batch) for batch in batches]
 
-        max_growth_step = int(self.min_batch_size * self.smooth_batches_max_diff)
+        smooth_batches_max_diff = self._get_safe_smooth_batch_max_diff()
+        max_growth_step = int(self.min_batch_size * smooth_batches_max_diff)
 
         smooth_lengths = []
         carry_over = 0
