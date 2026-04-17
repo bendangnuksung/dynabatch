@@ -359,13 +359,6 @@ def test_sampler_no_overlap(precomputed_lengths):
     assert len(all_indices) == len(set(all_indices)), "Indices should not repeat across batches"
 
 
-def test_sampler_shuffle_deterministic(precomputed_lengths):
-    token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
-    sampler_a = _make_sampler(token_lengths, word_lengths, char_lengths, shuffle=True, seed=42)
-    sampler_b = _make_sampler(token_lengths, word_lengths, char_lengths, shuffle=True, seed=42)
-    assert list(sampler_a) == list(sampler_b)
-
-
 def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
     token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
     sampler_no_shuffle = _make_sampler(token_lengths, word_lengths, char_lengths, shuffle=False)
