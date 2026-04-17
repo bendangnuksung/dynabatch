@@ -4,6 +4,7 @@ import traceback
 from typing import Any
 
 import torch
+from transformers import TrainerCallback
 
 
 def clear_gpu_memory(oom_error: Exception, **tensors: torch.Tensor) -> None:
@@ -172,3 +173,11 @@ def get_even_batch_size(target_size: int) -> int:
         return 1
 
     return target_size if target_size % 2 == 0 else target_size - 1
+
+
+class MemoryCleanupCallback(TrainerCallback):
+    def on_epoch_end(self, args, state, control, **kwargs):
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

@@ -19,6 +19,7 @@ dependencies = [
     "tqdm",
     "xgboost>=3.2.0",
     "sentencepiece",
+    "transformers"
 ]
 
 [project.urls]
