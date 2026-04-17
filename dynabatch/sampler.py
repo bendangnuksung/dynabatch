@@ -36,11 +36,18 @@ class DynaBatchSampler(Sampler[list[int]]):
                               relative to ``min_batch_size``.
         shuffle_seed:         RNG seed used for batch-order shuffling.
         shuffle_keep_first_n: Number of leading batches kept in original order
-                              even when shuffling.
+                              even when shuffling. (Needed for early OOM detection.)
         keep_batch_size_even: Round batch sizes to even numbers.
         friendly_batch_size:  Round batch sizes to powers of 2 (or 3x powers of 2).
         dynamic_batch_mode:   When False, all batches use exactly ``min_batch_size``
                               items (equivalent to MaxTokenSampler).
+        smooth_batches:       If True, apply a post-pass that smooths adjacent batch
+                              sizes to avoid large step changes.
+        smooth_batches_max_diff: Maximum allowed per-step growth between adjacent
+                              batches, expressed as a fraction of ``min_batch_size``.
+                              For example, ``0.2`` allows at most ``0.2 * min_batch_size``
+                              additional items per step (still capped by
+                              ``max_batch_range``/sampler max size).
         debug:                Print per-batch sizing decisions to stdout.
     """
 
@@ -62,6 +69,7 @@ class DynaBatchSampler(Sampler[list[int]]):
         smooth_batches_max_diff: float = 0.2,
         debug: bool = False,
     ):
+        random.seed(shuffle_seed)
         sorted_indices = sorted(
             range(len(token_lengths)),
             key=lambda i: token_lengths[i],
@@ -69,8 +77,8 @@ class DynaBatchSampler(Sampler[list[int]]):
         )
         self.threshold = threshold
         self.shuffle = shuffle
-        self.shuffle_seed = shuffle_seed
         self.shuffle_keep_first_n = shuffle_keep_first_n
+        self.is_first_shuffle = True
         self.friendly_batch_size = friendly_batch_size
         self.dynamic_batch_mode = dynamic_batch_mode
         self.debug = debug
@@ -209,6 +217,22 @@ class DynaBatchSampler(Sampler[list[int]]):
 
         return arranged_batches
 
+    def _shufffle_batches(self):
+        if not self.shuffle:
+            return
+        # shuffle indices within each batch
+        [random.shuffle(batch) for batch in self.batches]
+
+        # shuffle batches
+        if len(self.batches) > self.shuffle_keep_first_n and self.is_first_shuffle:
+            first_n = self.batches[: self.shuffle_keep_first_n]
+            rest = self.batches[self.shuffle_keep_first_n :]
+            random.shuffle(rest)
+            self.batches = first_n + rest
+            self.is_first_shuffle = False
+        else:
+            random.shuffle(self.batches)
+
     def _build_dynamic_batches(
         self,
         sorted_indices: list[int],
@@ -271,9 +295,6 @@ class DynaBatchSampler(Sampler[list[int]]):
         batches = self._smooth_batches(batches)
         batches = self._arrange_batches(batches, arrange_type="hardware_friendly")
         batches = self._arrange_batches(batches, arrange_type="even")
-        if self.shuffle:
-            [random.shuffle(batch) for batch in batches]
-
         return batches
 
     def _build_static_batches(self, sorted_indices: list[int]) -> list[list[int]]:
@@ -281,8 +302,6 @@ class DynaBatchSampler(Sampler[list[int]]):
         batches = []
         for i in range(0, len(sorted_indices), self.min_batch_size):
             batch_indices = sorted_indices[i : i + self.min_batch_size]
-            if self.shuffle:
-                random.shuffle(batch_indices)
             batches.append(batch_indices)
         return batches
 
@@ -293,21 +312,14 @@ class DynaBatchSampler(Sampler[list[int]]):
         word_lengths: list[int],
         char_lengths: list[int],
     ) -> list[list[int]]:
-        random.seed(self.shuffle_seed)
         if self.dynamic_batch_mode:
             batches = self._build_dynamic_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
         else:
             batches = self._build_static_batches(sorted_indices)
-
-        if self.shuffle and len(batches) > self.shuffle_keep_first_n:
-            first_n = batches[: self.shuffle_keep_first_n]
-            rest = batches[self.shuffle_keep_first_n :]
-            random.shuffle(rest)
-            batches = first_n + rest
-
         return batches
 
     def __iter__(self) -> Iterator[list[int]]:
+        self._shufffle_batches()
         return iter(self.batches)
 
     def __len__(self) -> int:
