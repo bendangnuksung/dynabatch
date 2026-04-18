@@ -265,7 +265,7 @@ class DynaBatchSampler(Sampler[list[int]]):
         remaining_char = sorted_char_lengths[self.min_batch_size :]
         next_start_idx = self.min_batch_size
 
-        with tqdm(total=len(remaining_token), desc="Step 2: building dynamic batches", unit="seq") as pbar:
+        with tqdm(total=len(sorted_token_lengths), desc="Step 2: building dynamic batches", unit="seq") as pbar:
             while len(remaining_token):
                 optimal_size = select_optimal_batch_size(
                     token_lengths=remaining_token,

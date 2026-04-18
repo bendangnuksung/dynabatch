@@ -176,8 +176,16 @@ def get_even_batch_size(target_size: int) -> int:
 
 
 class MemoryCleanupCallback(TrainerCallback):
-    def on_epoch_end(self, args, state, control, **kwargs):
+    def _cleanup(self):
         gc.collect()
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        """Runs immediately after the evaluation loop finishes."""
+        self._cleanup()
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        """Runs after the epoch is fully complete (including eval)."""
+        self._cleanup()
