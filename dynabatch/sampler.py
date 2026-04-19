@@ -1,5 +1,6 @@
 """Internal module: length-sorted batch sampler with optional regressor-guided sizing."""
 
+import os
 import random
 from itertools import chain
 from typing import Iterator
@@ -93,6 +94,21 @@ class DynaBatchSampler(Sampler[list[int]]):
         self._n_steps = int((self.batch_end_range - self.batch_start_range) * _CANDIDATE_STEPS_PER_UNIT)
 
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
+        self._set_cuda_alloc_conf()
+
+    def _set_cuda_alloc_conf(self):
+        """
+        PyTorch's CUDA allocator normally reserves fixed-size memory blocks. When a block is too small
+        for a new allocation, it has to find or create a new contiguous block. With
+        expandable_segments:True, instead of reserving fixed blocks, the allocator can expand an
+        existing segment using cuMemAddressReserve (the newer CUDA VMM API). This means:
+            - Free blocks that are adjacent in virtual address space can be merged on demand
+            - Large allocations no longer require a single pre-existing contiguous physical block
+            - The allocator avoids the "memory is free but fragmented" failure mode
+        This is useful when SHUFFLE is True because of the shuffle operations, the CUDA memory fragmentation gets worse
+        """
+        if self.shuffle:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     def _get_safe_smooth_batch_max_diff(self) -> int:
         minimum_diff = 1 / max(1.0, self.max_batch_size - self.min_batch_size)
