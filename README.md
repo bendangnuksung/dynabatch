@@ -226,6 +226,22 @@ Power-user options:
 - Use `scale_lr_for_dynabatch(args, sampler, dataset_size)` as a standalone helper if you want explicit LR control outside trainer construction.
 - For non-text modalities, set `batch_size_key=...` (for example `"pixel_values"`) so batch-size extraction in `compute_loss()` reads the right tensor.
 
+OOM fallback options:
+
+- `oom_fallback="split_retry"`: on `torch.cuda.OutOfMemoryError` during `training_step`, retry the same step in smaller chunks and keep as many samples as possible.
+- `oom_fallback="skip"`: clear memory and skip the failing step by returning a zero loss.
+- `oom_fallback=None`: (default) disable fallback and re-raise OOM immediately.
+- `oom_min_batch_size`: chunk size used by split-retry. If unset, the trainer uses `dynabatch_sampler.min_batch_size`.
+- Every handled OOM increments an `oom_failed` counter and logs it via `Trainer.log(...)`, so it appears in Trainer/TQDM progress metrics.
+
+```python
+trainer = DynabatchSeq2SeqTrainer(
+    ...,
+    oom_fallback="split_retry",  # "split_retry" | "skip" | None
+    oom_min_batch_size=2,
+)
+```
+
 ## How It Works
 
 1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
@@ -333,7 +349,7 @@ class DynabatchTrainerMixin
 ```
 
 - `make_dynabatch_trainer`: builds a cached subclass combining `DynabatchTrainerMixin` with your trainer class.
-- `DynabatchTrainerMixin`: overrides train dataloader + loss reweighting for variable micro-batch sizes.
+- `DynabatchTrainerMixin`: overrides train dataloader + loss reweighting for variable micro-batch sizes, and adds optional OOM fallback in `training_step`.
 - `scale_lr_for_dynabatch`: standalone helper mainly for fair fixed-vs-dynabatch comparisons; keep it off for normal training unless you explicitly want step-count-based LR adjustment.
 
 ## Regressor Training

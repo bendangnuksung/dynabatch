@@ -49,6 +49,38 @@ def split_batch(batch: dict, chunk_size: int) -> list[dict]:
     return chunks
 
 
+def split_inputs_dict(
+    batch: dict[str, Any], chunk_size: int, batch_size_key: str = "input_ids"
+) -> list[dict[str, Any]]:
+    """
+    Split trainer inputs into size-limited chunks while preserving metadata keys.
+
+    Tensor values and sequence-like values that match the batch length are sliced
+    on the first dimension. Scalar/config-like values are copied as-is.
+    """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0.")
+
+    batch_size_value = batch.get(batch_size_key)
+    if batch_size_value is None:
+        raise KeyError(f"Batch size key `{batch_size_key}` not found in inputs.")
+
+    n_samples = len(batch_size_value)
+    chunks: list[dict[str, Any]] = []
+    for start in range(0, n_samples, chunk_size):
+        end = start + chunk_size
+        chunk: dict[str, Any] = {}
+        for key, value in batch.items():
+            if torch.is_tensor(value):
+                chunk[key] = value[start:end]
+            elif isinstance(value, (list, tuple)) and len(value) == n_samples:
+                chunk[key] = value[start:end]
+            else:
+                chunk[key] = value
+        chunks.append(chunk)
+    return chunks
+
+
 def merge_outputs(outputs: list[torch.Tensor]) -> torch.Tensor | None:
     """
     Merges a list of tensors from ``model.generate()`` into a single tensor.
