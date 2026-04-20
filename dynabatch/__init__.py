@@ -1,6 +1,6 @@
 import os
 
-__version__ = "0.2.16"
+__version__ = "0.2.17"
 
 
 def set_cuda_alloc_conf():
@@ -24,4 +24,5 @@ def set_cuda_alloc_conf():
 set_cuda_alloc_conf()
 
 from .main import build_dynabatch_dataloader, compute_lengths, dynabatch_sampler
+from .trainer import DynabatchTrainerMixin, make_dynabatch_trainer, scale_lr_for_dynabatch
 from .utils import MemoryCleanupCallback, clear_gpu_memory, generate_with_oom_fallback, merge_outputs, split_batch
