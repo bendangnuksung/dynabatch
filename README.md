@@ -55,7 +55,7 @@ Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_toke
     <tr>
       <th align="left">Notebooks</th>
       <th align="left">Comparison</th>
-      <th align="left">Notes</th>
+      <th align="left">Notes/Observations</th>
     </tr>
   </thead>
   <tbody>
