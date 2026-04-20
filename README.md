@@ -48,6 +48,7 @@ loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
 Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_token_length=256)`** for a built-in loader.
 
 ## Notebooks 
+[All Notebooks](./notebooks/)
 
 <table>
   <thead>
@@ -71,9 +72,17 @@ Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_toke
       </td>
     </tr>
     <tr>
-      <td valign="top">Training<br>🟠🟡NotYet</td>
-      <td valign="top">—</td>
-      <td valign="top">—</td>
+      <td valign="top">Training<br><a href="https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb">🟠🟡Colab</a></td>
+      <td valign="top"><img src="images/training_comparison.png" alt="Inference comparison table" width="2000"></td>
+      <td valign="top">
+        <ul>
+          <li>Ran on <strong>RTX 5090</strong></li>
+          <li>Roughly <strong>3×</strong> higher throughput vs standard Seq2Seq training with a fixed batch size</li>
+          <li>Compares Hugging Face <strong>Seq2SeqTrainer</strong> (static batching) to <strong>Dynabatch Trainer</strong></li>
+          <li>The bottleneck was VRAM on long examples: small fixed batches leave headroom on shorter sequences; dynabatch scales batch size there and fills the GPU better, so the win is larger than when training is already compute saturated</li>
+          <li>Sometimes the Dynabatch overestimates the batch size leading to "OOM" errors. In the notebook we see "OOM fallback" which handles such cases by splitting into smaller batches and Forward passes to the model.</li>
+        </ul>
+      </td>
     </tr>
   </tbody>
 </table>
