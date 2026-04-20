@@ -1,4 +1,15 @@
-"""Trainer helpers to plug DynaBatch into HuggingFace Trainer classes."""
+"""
+Trainer helpers to plug DynaBatch into HuggingFace Trainer classes.
+
+Why this module exists:
+- DynaBatch changes micro-batch sizes across steps.
+- HuggingFace Trainer's default gradient-accumulation behavior assumes a stable
+  per-step micro-batch size.
+- For most real training runs this is still fine, but for strict baseline-vs-
+  dynabatch comparisons, we often want explicit control over both:
+  1) per-step loss contribution under variable micro-batch sizes, and
+  2) learning-rate scaling when dynabatch changes steps-per-epoch.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +38,20 @@ def scale_lr_for_dynabatch(
 
     where ``static_steps_per_epoch`` is approximated with a fixed batch size and
     ``dynabatch_steps_per_epoch`` is ``len(sampler)``.
+
+    Why this can matter:
+    - DynaBatch can reduce the number of optimizer updates per epoch by packing
+      more examples into later (shorter) batches.
+    - With schedulers such as cosine decay, fewer updates compress the same LR
+      schedule into fewer steps, which changes effective optimization dynamics.
+    - Scaling LR by the step-count ratio is a practical linear-scaling-style
+      correction for apples-to-apples comparisons against fixed-batch training.
+
+    Why this is optional (and default-off in the mixin):
+    - In normal production training, users often tune LR directly for their
+      actual pipeline and do not want automatic LR transformation.
+    - This helper is mainly for controlled comparisons with older trainer/
+      collator setups that used fixed batch sizes.
     """
     if baseline_batch_size is None:
         baseline_batch_size = int(args.per_device_train_batch_size)
@@ -43,7 +68,16 @@ def scale_lr_for_dynabatch(
 
 
 class DynabatchTrainerMixin:
-    """Mixin that injects DynaBatch dataloader and variable-batch loss scaling."""
+    """
+    Mixin that injects DynaBatch dataloader and variable-batch loss scaling.
+
+    Design notes:
+    - Uses ``super().compute_loss(...)`` to preserve trainer-specific behavior
+      (label smoothing, subclass hooks, custom loss paths) and only applies
+      dynabatch-specific rescaling as a post-process.
+    - ``auto_scale_lr`` defaults to ``False`` because automatic LR scaling is
+      usually needed for benchmark fairness, not for day-to-day training.
+    """
 
     def __init__(
         self,
@@ -57,6 +91,9 @@ class DynabatchTrainerMixin:
         self._batch_size_key = batch_size_key
 
         if auto_scale_lr:
+            # Auto LR scaling is intentionally opt-in. It is most useful when
+            # reproducing old fixed-batch baselines and keeping comparable
+            # optimization signal per epoch after dynabatch changes step count.
             training_args = kwargs.get("args")
             train_dataset = kwargs.get("train_dataset")
             if training_args is None or train_dataset is None:
@@ -99,6 +136,15 @@ class DynabatchTrainerMixin:
         )
 
         if self.args.gradient_accumulation_steps > 1:
+            # Why this reweighting is needed:
+            # - Under gradient accumulation, Trainer aggregates micro-batch losses
+            #   assuming a stable micro-batch size.
+            # - DynaBatch deliberately varies micro-batch size by step.
+            # - Without reweighting, smaller/larger micro-batches can contribute
+            #   disproportionately to the accumulated optimizer update.
+            # - Scaling by (current/expected batch size) makes each micro-batch
+            #   contribute roughly in proportion to sample count, which is the
+            #   intended behavior for variable-size accumulation windows.
             loss = loss * (current_batch_size / self._get_expected_batch_size())
 
         return (loss, outputs) if return_outputs else loss

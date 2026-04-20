@@ -163,6 +163,69 @@ train_loader = DataLoader(
 )
 ```
 
+### Hugging Face Trainer integration (plug-and-play)
+
+If you train with Hugging Face `Trainer`, use the trainer helpers so you do not have to manually inject:
+
+- `get_train_dataloader()` override for `batch_sampler`
+- `compute_loss()` reweighting for variable micro-batch sizes under gradient accumulation
+
+```python
+from transformers import Seq2SeqTrainer # Seq2SeqTrainer  as
+from dynabatch import (
+    dynabatch_sampler,
+    make_dynabatch_trainer,
+    MemoryCleanupCallback,
+)
+
+sampler = dynabatch_sampler(
+    texts=train_texts,
+    tokenizer=tokenizer,
+    batch_size=8,
+    max_input_token_length=512,
+    shuffle=True,
+)
+
+DynabatchSeq2SeqTrainer = make_dynabatch_trainer(Seq2SeqTrainer)
+
+trainer = DynabatchSeq2SeqTrainer(
+    dynabatch_sampler=sampler,
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    data_collator=data_collator,
+    callbacks=[MemoryCleanupCallback()],
+)
+```
+
+When this is a good fit:
+
+- You use a Hugging Face trainer class and want dynamic batching without custom trainer boilerplate.
+- `gradient_accumulation_steps > 1` and micro-batch sizes vary by step.
+- You want fairer baseline-vs-dynabatch comparisons where fewer dynabatch steps can otherwise change the effective LR schedule.
+
+Why loss reweighting exists:
+
+- With variable micro-batch sizes, a plain accumulated loss can bias optimizer updates toward steps with smaller/larger batch sizes.
+- Dynabatch rescales each micro-batch by `current_batch_size / per_device_train_batch_size` so contribution is closer to sample-count-weighted behavior.
+
+When to enable LR auto-scaling (Off by default):
+
+- You are comparing against an older fixed-batch trainer/collator setup and want similar effective optimization signal per epoch.
+- DynaBatch significantly reduces steps-per-epoch and you want a linear-scaling-style correction.
+
+```python
+trainer = DynabatchSeq2SeqTrainer(..., auto_scale_lr=True)
+```
+
+Power-user options:
+
+- Use `DynabatchTrainerMixin` directly if you need custom multiple inheritance:
+  `class MyTrainer(DynabatchTrainerMixin, Seq2SeqTrainer): ...`
+- Use `scale_lr_for_dynabatch(args, sampler, dataset_size)` as a standalone helper if you want explicit LR control outside trainer construction.
+- For non-text modalities, set `batch_size_key=...` (for example `"pixel_values"`) so batch-size extraction in `compute_loss()` reads the right tensor.
+
 ## How It Works
 
 1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
@@ -255,6 +318,23 @@ build_dynabatch_dataloader(
 | `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation (for example `truncation=True`). |
 
 The returned `DataLoader` yields dictionaries containing `input_ids`, `attention_mask`, `texts`, and any other tokenizer outputs.
+
+### Trainer helpers
+
+```python
+make_dynabatch_trainer(trainer_cls: type) -> type
+scale_lr_for_dynabatch(
+    args: Any,
+    sampler: DynaBatchSampler,
+    dataset_size: int,
+    baseline_batch_size: int | None = None,
+) -> Any
+class DynabatchTrainerMixin
+```
+
+- `make_dynabatch_trainer`: builds a cached subclass combining `DynabatchTrainerMixin` with your trainer class.
+- `DynabatchTrainerMixin`: overrides train dataloader + loss reweighting for variable micro-batch sizes.
+- `scale_lr_for_dynabatch`: standalone helper mainly for fair fixed-vs-dynabatch comparisons; keep it off for normal training unless you explicitly want step-count-based LR adjustment.
 
 ## Regressor Training
 
