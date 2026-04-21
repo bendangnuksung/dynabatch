@@ -4,6 +4,8 @@
 
 It is mainly built and tested for encoder-decoder machine translation style workloads, where input length is a decent proxy for output length and memory usage.
 
+**Throughput:** Example [Notebooks](#notebooks) runs: **inference generate()** on a T4 was **~1.06–1.21×** vs the max-token sampler alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed batch long examples cap batch size, so a fixed batch leaves memory headroom and compute underused on shorter sequences; dynabatch recovers some of that. **Illustrative only.**
+
 ## Installation
 
 ```bash
@@ -61,25 +63,28 @@ Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_toke
   <tbody>
     <tr>
       <td valign="top">Inference<br><a href="https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb">🟠🟡Colab</a></td>
-      <td valign="top"><img src="images/inference_generate_comparitive_analysis_table.png" alt="Inference comparison table" width="2000"></td>
+      <td valign="top"><img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/ed4c58a0deb2f03ec7d21aede1af2a9ce91cabbd/images/inference_generate_comparitive_analysis_table.png" alt="Inference comparison table" width="2000"></td>
       <td valign="top">
         <ul>
           <li>Ran on Colab <strong>T4</strong></li>
-          <li>Modest speedups overall</li>
-          <li>Bigger wins on heavy models (e.g. NLLB, Qwen): high memory use → smaller static batches → more compute-bound; dynamic batching helps more</li>
-          <li>Faster GPUs at the same VRAM may see bigger gains than on a T4</li>
+          <li><strong>~1.06×–1.21×</strong> vs max-token sampler alone across three models (small gains)</li>
+           <li>Bigger wins on heavy models (e.g. NLLB, Qwen): high memory use → 
+          smaller static batches → more compute-bound; dynamic batching helps 
+          more</li>
+          <li>Faster GPUs at the same VRAM may see bigger gains than on a T4</
+          li>
         </ul>
       </td>
     </tr>
     <tr>
       <td valign="top">Training<br><a href="https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb">🟠🟡Colab</a></td>
-      <td valign="top"><img src="images/training_comparison.png" alt="Inference comparison table" width="2000"></td>
+      <td valign="top"><img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/ed4c58a0deb2f03ec7d21aede1af2a9ce91cabbd/images/training_comparison.png" alt="Training comparison chart" width="2000"></td>
       <td valign="top">
         <ul>
           <li>Ran on <strong>RTX 5090</strong></li>
           <li>Roughly <strong>3×</strong> higher throughput vs standard Seq2Seq training with a fixed batch size</li>
           <li>Compares Hugging Face <strong>Seq2SeqTrainer</strong> (static batching) to <strong>Dynabatch Trainer</strong></li>
-          <li>The bottleneck was VRAM on long examples: small fixed batches leave headroom on shorter sequences; dynabatch scales batch size there and fills the GPU better, so the win is larger than when training is already compute saturated</li>
+          <li>Mostly <strong>memory-bound</strong> with a fixed batch: long examples force a small batch, so much of the GPU’s compute sits idle on shorter sequences; dynabatch grows batches there. Gains are smaller when training is already compute-saturated</li>
           <li>Sometimes the Dynabatch overestimates the batch size leading to "OOM" errors. In the notebook we see "OOM fallback" which handles such cases by splitting into smaller batches and Forward passes to the model.</li>
         </ul>
       </td>
