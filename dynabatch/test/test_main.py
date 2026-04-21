@@ -1,12 +1,14 @@
 """Tests for dynabatch internals and public components."""
 
+import random
 import re
 
 import numpy as np
 import pytest
 
-from dynabatch.main import TextDataset, _collate_fn, compute_lengths
-from dynabatch.regressor import build_baseline_features, select_optimal_batch_size
+import dynabatch.main as _main_module
+from dynabatch.main import TextDataset, _collate_fn, compute_lengths, dynabatch_sampler
+from dynabatch.regressor import _build_candidate_features, build_baseline_features, select_optimal_batch_size
 from dynabatch.sampler import DynaBatchSampler
 
 
@@ -312,6 +314,66 @@ def test_select_optimal_batch_size_fallback_to_baseline():
     assert result == _BASELINE_BS
 
 
+def test_build_candidate_features_vectorized_parity():
+    candidate_sizes = np.array([2, 3, 4, 5, 6], dtype=np.int64)
+    token_lengths = np.array([20, 18, 16, 14, 12, 10, 8], dtype=np.int64)
+    word_lengths = np.array([10, 9, 8, 7, 6, 5, 4], dtype=np.int64)
+    char_lengths = np.array([100, 90, 80, 70, 60, 50, 40], dtype=np.int64)
+
+    actual = _build_candidate_features(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        candidate_batch_sizes=candidate_sizes,
+    )
+
+    expected = {
+        "batch_size_y": list(candidate_sizes),
+        "token_mean_y": [float(np.mean(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_std_y": [float(np.std(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_sum_y": [float(np.sum(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_max_y": [float(np.max(token_lengths[:bs])) for bs in candidate_sizes],
+        "word_mean_y": [float(np.mean(word_lengths[:bs])) for bs in candidate_sizes],
+        "word_sum_y": [float(np.sum(word_lengths[:bs])) for bs in candidate_sizes],
+        "word_max_y": [float(np.max(word_lengths[:bs])) for bs in candidate_sizes],
+        "char_sum_y": [float(np.sum(char_lengths[:bs])) for bs in candidate_sizes],
+    }
+
+    assert expected.keys() == actual.keys()
+    for key, expected_values in expected.items():
+        np.testing.assert_allclose(actual[key], expected_values, rtol=1e-9, atol=1e-9)
+
+
+def test_build_candidate_features_vectorized_parity_with_oversize_candidates():
+    candidate_sizes = np.array([2, 3, 8, 12], dtype=np.int64)
+    token_lengths = np.array([20, 18, 16, 14, 12], dtype=np.int64)
+    word_lengths = np.array([10, 9, 8, 7, 6], dtype=np.int64)
+    char_lengths = np.array([100, 90, 80, 70, 60], dtype=np.int64)
+
+    actual = _build_candidate_features(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        candidate_batch_sizes=candidate_sizes,
+    )
+
+    expected = {
+        "batch_size_y": list(candidate_sizes),
+        "token_mean_y": [float(np.mean(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_std_y": [float(np.std(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_sum_y": [float(np.sum(token_lengths[:bs])) for bs in candidate_sizes],
+        "token_max_y": [float(np.max(token_lengths[:bs])) for bs in candidate_sizes],
+        "word_mean_y": [float(np.mean(word_lengths[:bs])) for bs in candidate_sizes],
+        "word_sum_y": [float(np.sum(word_lengths[:bs])) for bs in candidate_sizes],
+        "word_max_y": [float(np.max(word_lengths[:bs])) for bs in candidate_sizes],
+        "char_sum_y": [float(np.sum(char_lengths[:bs])) for bs in candidate_sizes],
+    }
+
+    assert expected.keys() == actual.keys()
+    for key, expected_values in expected.items():
+        np.testing.assert_allclose(actual[key], expected_values, rtol=1e-9, atol=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # MaxTokenBatchSampler
 # ---------------------------------------------------------------------------
@@ -380,6 +442,80 @@ def test_sampler_shuffle_vs_no_shuffle(sample_texts, precomputed_lengths):
 
     if len(unshuffled) >= 3:
         assert shuffled != unshuffled, "Shuffle should change batch order with keep_first_n=0"
+
+
+def test_sampler_does_not_mutate_global_random_state(precomputed_lengths):
+    token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
+    random.seed(2026)
+    expected_after = random.random()
+    random.seed(2026)
+
+    _ = DynaBatchSampler(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        min_batch_size=2,
+        shuffle=True,
+        shuffle_seed=999,
+    )
+    actual_after = random.random()
+    assert actual_after == expected_after
+
+
+def test_sampler_max_batch_range_one_does_not_crash(precomputed_lengths):
+    token_lengths, word_lengths, char_lengths, _ = precomputed_lengths
+    dynamic_sampler = DynaBatchSampler(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        min_batch_size=2,
+        max_batch_range=1.0,
+        dynamic_batch_mode=True,
+    )
+    static_sampler = DynaBatchSampler(
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        min_batch_size=2,
+        dynamic_batch_mode=False,
+    )
+    assert [len(batch) for batch in dynamic_sampler] == [len(batch) for batch in static_sampler]
+
+
+def test_dynabatch_sampler_uses_precomputed_lengths_without_compute(monkeypatch):
+    texts = ["a bb ccc", "dd eee ffff", "gg", "hhh iiii", "jjj k"]
+    token_lengths = [3, 3, 1, 2, 2]
+    word_lengths = [3, 3, 1, 2, 2]
+    char_lengths = [8, 11, 2, 8, 5]
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_lengths should not be called when precomputed lengths are provided")
+
+    monkeypatch.setattr(_main_module, "compute_lengths", _boom)
+    sampler = dynabatch_sampler(
+        texts=texts,
+        tokenizer=object(),
+        batch_size=2,
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        dynamic_batch_mode=False,
+    )
+    batches = list(sampler)
+    assert sum(len(batch) for batch in batches) == len(texts)
+
+
+def test_dynabatch_sampler_precomputed_lengths_must_match_text_count(mock_tokenizer):
+    texts = ["a", "b", "c"]
+    with pytest.raises(ValueError, match="match `len\\(texts\\)`"):
+        dynabatch_sampler(
+            texts=texts,
+            tokenizer=mock_tokenizer,
+            batch_size=2,
+            token_lengths=[1, 1],
+            word_lengths=[1, 1, 1],
+            char_lengths=[1, 1, 1],
+        )
 
 
 def test_batch_size_increased(sample_texts_5000, mock_word_tokenizer_session):

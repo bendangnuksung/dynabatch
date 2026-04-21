@@ -149,6 +149,36 @@ def test_dataloader_max_batch_range_kwarg(sample_texts, mock_tokenizer):
     assert sorted(seen) == sorted(truncated_texts)
 
 
+def test_dataloader_uses_precomputed_lengths_without_compute(monkeypatch, sample_texts, mock_tokenizer):
+    from dynabatch.main import compute_lengths
+
+    token_lengths, word_lengths, char_lengths, _ = compute_lengths(
+        sample_texts, mock_tokenizer, max_length=_MAX_TOKEN_LEN
+    )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_lengths should not be called when precomputed lengths are provided")
+
+    monkeypatch.setattr(_main_module, "compute_lengths", _boom)
+
+    loader = build_dynabatch_dataloader(
+        texts=sample_texts,
+        tokenizer=mock_tokenizer,
+        batch_size=_BATCH_SIZE,
+        max_input_token_length=_MAX_TOKEN_LEN,
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
+        num_workers=0,
+        dynamic_batch_mode=False,
+    )
+
+    seen_texts = []
+    for batch in loader:
+        seen_texts.extend(batch["texts"])
+    assert sorted(seen_texts) == sorted(sample_texts)
+
+
 # ---------------------------------------------------------------------------
 # test_mock_training_loop
 # ---------------------------------------------------------------------------
@@ -220,7 +250,7 @@ def test_mock_inference_loop(sample_texts, mock_tokenizer, loader_builder):
 
     assert len(outputs) > 0, "At least one batch must be produced"
 
-    merged = merge_outputs(outputs)
+    merged = merge_outputs(outputs, pad_token_id=0)
     assert merged is not None
     # Each text produces exactly one output row
     assert merged.shape[0] == len(sample_texts)

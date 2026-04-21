@@ -70,7 +70,7 @@ class DynaBatchSampler(Sampler[list[int]]):
         smooth_batches_max_diff: float = 0.2,
         debug: bool = False,
     ):
-        random.seed(shuffle_seed)
+        self._rng = random.Random(shuffle_seed)
         sorted_indices = sorted(
             range(len(token_lengths)),
             key=lambda i: token_lengths[i],
@@ -91,7 +91,10 @@ class DynaBatchSampler(Sampler[list[int]]):
         self.batch_end_range = max(max_batch_range, 1.0)
         self.min_batch_size = min_batch_size
         self.max_batch_size = int(self.batch_end_range * self.min_batch_size)
-        self._n_steps = int((self.batch_end_range - self.batch_start_range) * _CANDIDATE_STEPS_PER_UNIT)
+        self._n_steps = max(
+            1,
+            int((self.batch_end_range - self.batch_start_range) * _CANDIDATE_STEPS_PER_UNIT),
+        )
 
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
 
@@ -222,17 +225,17 @@ class DynaBatchSampler(Sampler[list[int]]):
         if not self.shuffle:
             return
         # shuffle indices within each batch
-        [random.shuffle(batch) for batch in self.batches]
+        [self._rng.shuffle(batch) for batch in self.batches]
 
         # shuffle batches
         if len(self.batches) > self.shuffle_keep_first_n and self.is_first_shuffle:
             first_n = self.batches[: self.shuffle_keep_first_n]
             rest = self.batches[self.shuffle_keep_first_n :]
-            random.shuffle(rest)
+            self._rng.shuffle(rest)
             self.batches = first_n + rest
             self.is_first_shuffle = False
         else:
-            random.shuffle(self.batches)
+            self._rng.shuffle(self.batches)
 
     def _build_dynamic_batches(
         self,

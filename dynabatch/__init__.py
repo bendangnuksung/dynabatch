@@ -1,6 +1,6 @@
 import os
 
-__version__ = "0.2.18"
+__version__ = "0.2.19"
 
 
 def set_cuda_alloc_conf():
@@ -18,7 +18,7 @@ def set_cuda_alloc_conf():
     Important Note: this is only useful if it is set before CUDA / the CUDA allocator is initialized. So this
     package needs to be imported before  loading any Model to cuda or using any other CUDA related operations.
     """
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 set_cuda_alloc_conf()

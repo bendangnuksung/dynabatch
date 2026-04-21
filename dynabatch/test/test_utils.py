@@ -56,33 +56,33 @@ def test_split_batch_preserves_values():
 
 
 def test_merge_outputs_empty():
-    result = merge_outputs([])
+    result = merge_outputs([], pad_token_id=9)
     assert result is None
 
 
 def test_merge_outputs_uniform():
     outputs = [torch.ones(2, 5), torch.ones(3, 5)]
-    merged = merge_outputs(outputs)
+    merged = merge_outputs(outputs, pad_token_id=9)
     assert merged is not None
     assert merged.shape == (5, 5)
 
 
 def test_merge_outputs_variable():
     outputs = [torch.ones(2, 8), torch.ones(3, 4)]
-    merged = merge_outputs(outputs)
+    merged = merge_outputs(outputs, pad_token_id=9)
     assert merged is not None
-    # rows from second tensor should be zero-padded to length 8
+    # rows from second tensor should be pad-token padded to length 8
     assert merged.shape == (5, 8)
     # first two rows from first tensor — all ones
     assert torch.all(merged[:2] == 1.0)
-    # last three rows from second tensor — first 4 cols ones, last 4 zeros
+    # last three rows from second tensor — first 4 cols ones, last 4 are pad_token_id
     assert torch.all(merged[2:, :4] == 1.0)
-    assert torch.all(merged[2:, 4:] == 0.0)
+    assert torch.all(merged[2:, 4:] == 9.0)
 
 
 def test_merge_outputs_single():
     t = torch.arange(6).reshape(2, 3)
-    merged = merge_outputs([t])
+    merged = merge_outputs([t], pad_token_id=9)
     assert merged is not None
     assert torch.equal(merged, t)
 

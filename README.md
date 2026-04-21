@@ -293,6 +293,9 @@ dynabatch_sampler(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    token_lengths: list[int] | None = None,
+    word_lengths: list[int] | None = None,
+    char_lengths: list[int] | None = None,
 ) -> DynaBatchSampler
 ```
 
@@ -318,6 +321,9 @@ build_dynabatch_dataloader(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    token_lengths: list[int] | None = None,
+    word_lengths: list[int] | None = None,
+    char_lengths: list[int] | None = None,
     **tokenizer_kwargs,
 ) -> DataLoader
 ```
@@ -340,6 +346,7 @@ build_dynabatch_dataloader(
 | `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, the loader reduces to Max Token Sampler/Batching with fixed batch size. This is the main switch for testing whether the dynamic part is actually helping your workload. |
 | `smooth_batches` | If `True`, applies a smoothing pass after dynamic sizing so adjacent batches do not jump too abruptly in size. |
 | `smooth_batches_max_diff` | Controls the largest allowed growth between adjacent batches as a fraction of `batch_size`. Example: `0.2` allows at most `0.2 * batch_size` extra items per step (still bounded by max batch size). |
+| `token_lengths`, `word_lengths`, `char_lengths` | Optional precomputed lengths aligned with `texts`. Provide all three to skip the upfront `compute_lengths` tokenization pass. |
 | `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation (for example `truncation=True`). |
 
 The returned `DataLoader` yields dictionaries containing `input_ids`, `attention_mask`, `texts`, and any other tokenizer outputs.

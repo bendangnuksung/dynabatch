@@ -81,7 +81,7 @@ def split_inputs_dict(
     return chunks
 
 
-def merge_outputs(outputs: list[torch.Tensor]) -> torch.Tensor | None:
+def merge_outputs(outputs: list[torch.Tensor], pad_token_id: int) -> torch.Tensor | None:
     """
     Merges a list of tensors from ``model.generate()`` into a single tensor.
     Handles variable sequence lengths by right-padding shorter tensors with zeros.
@@ -106,7 +106,7 @@ def merge_outputs(outputs: list[torch.Tensor]) -> torch.Tensor | None:
     for o in outputs:
         if o.shape[1] < max_len:
             pad_amount = max_len - o.shape[1]
-            o = torch.nn.functional.pad(o, (0, pad_amount), value=0)
+            o = torch.nn.functional.pad(o, (0, pad_amount), value=pad_token_id)
         padded_outputs.append(o)
 
     return torch.cat(padded_outputs, dim=0)
@@ -117,6 +117,7 @@ def generate_with_oom_fallback(
     batch: dict,
     min_batch_size: int,
     device: torch.device,
+    pad_token_id: int | None = None,
     **generate_kwargs: Any,
 ) -> tuple[torch.Tensor, bool]:
     """
@@ -143,6 +144,10 @@ def generate_with_oom_fallback(
                           to ``build_dynamic_batch_dataloader``.
         device:           The torch device to move tensors onto before calling
                           ``generate``.
+        pad_token_id:     Optional padding token id used when merging fallback
+                          outputs with varying sequence lengths. If omitted,
+                          resolved from ``model.generation_config.pad_token_id``
+                          then ``model.config.pad_token_id``.
         **generate_kwargs: Additional keyword arguments forwarded to
                           ``model.generate()`` on every call (e.g.
                           ``forced_bos_token_id``).
@@ -152,6 +157,18 @@ def generate_with_oom_fallback(
         generated token tensor and ``did_fallback`` is ``True`` if an OOM
         occurred and the fallback path was used.
     """
+    if pad_token_id is None:
+        generation_config = getattr(model, "generation_config", None)
+        model_config = getattr(model, "config", None)
+        pad_token_id = getattr(generation_config, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(model_config, "pad_token_id", None)
+        if pad_token_id is None:
+            raise ValueError(
+                "Unable to resolve `pad_token_id`. Pass `pad_token_id=...` or set "
+                "`model.generation_config.pad_token_id` / `model.config.pad_token_id`."
+            )
+
     input_ids = batch["input_ids"].to(device)
     attention_mask = batch["attention_mask"].to(device)
     try:
@@ -176,7 +193,7 @@ def generate_with_oom_fallback(
             sub_outputs.append(sub_output.cpu())
             del sub_input, sub_mask, sub_output
             torch.cuda.empty_cache()
-        return merge_outputs(sub_outputs), True
+        return merge_outputs(sub_outputs, pad_token_id=pad_token_id), True
 
 
 def get_hardware_friendly_batch_size(target_size: int) -> int:

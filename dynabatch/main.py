@@ -235,6 +235,31 @@ def _effective_num_workers(num_workers: int, debug: bool) -> int:
     return min(available_workers, num_workers)
 
 
+def _validate_precomputed_lengths(
+    texts: list[str],
+    token_lengths: list[int] | None,
+    word_lengths: list[int] | None,
+    char_lengths: list[int] | None,
+) -> tuple[list[int], list[int], list[int]] | None:
+    provided_lengths = [token_lengths, word_lengths, char_lengths]
+    if all(lengths is None for lengths in provided_lengths):
+        return None
+
+    if any(lengths is None for lengths in provided_lengths):
+        raise ValueError(
+            "When providing precomputed lengths, you must pass all of "
+            "`token_lengths`, `word_lengths`, and `char_lengths`."
+        )
+
+    text_count = len(texts)
+    if len(token_lengths) != text_count or len(word_lengths) != text_count or len(char_lengths) != text_count:
+        raise ValueError(
+            "Precomputed lengths must match `len(texts)` for token_lengths, " "word_lengths, and char_lengths."
+        )
+
+    return token_lengths, word_lengths, char_lengths
+
+
 def _build_dynabatch_sampler_and_texts(
     texts: list[str],
     tokenizer: PreTrainedTokenizerBase,
@@ -252,11 +277,25 @@ def _build_dynabatch_sampler_and_texts(
     dynamic_batch_mode: bool,
     smooth_batches: bool,
     smooth_batches_max_diff: float,
+    token_lengths: list[int] | None = None,
+    word_lengths: list[int] | None = None,
+    char_lengths: list[int] | None = None,
 ) -> tuple[DynaBatchSampler, list[str], int]:
     num_workers = _effective_num_workers(num_workers, debug)
-    token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
-        texts, tokenizer, max_input_token_length, max_workers=num_workers
+    precomputed_lengths = _validate_precomputed_lengths(
+        texts=texts,
+        token_lengths=token_lengths,
+        word_lengths=word_lengths,
+        char_lengths=char_lengths,
     )
+    if precomputed_lengths is None:
+        token_lengths, word_lengths, char_lengths, truncated_texts = compute_lengths(
+            texts, tokenizer, max_input_token_length, max_workers=num_workers
+        )
+    else:
+        token_lengths, word_lengths, char_lengths = precomputed_lengths
+        truncated_texts = texts
+
     sampler = DynaBatchSampler(
         token_lengths=token_lengths,
         word_lengths=word_lengths,
@@ -294,6 +333,9 @@ def dynabatch_sampler(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    token_lengths: list[int] | None = None,
+    word_lengths: list[int] | None = None,
+    char_lengths: list[int] | None = None,
 ) -> DynaBatchSampler:
     """
     Build a length-sorted batch sampler with optional regressor-guided sizing.
@@ -358,6 +400,14 @@ def dynabatch_sampler(
                                 For example, ``0.2`` allows at most ``0.2 * batch_size``
                                 additional items per step (still capped by
                                 ``max_batch_range``/sampler max size).
+        token_lengths:          Optional precomputed token lengths aligned with
+                                ``texts``. When provided together with
+                                ``word_lengths`` and ``char_lengths``,
+                                ``compute_lengths`` is skipped.
+        word_lengths:           Optional precomputed word lengths aligned with
+                                ``texts``.
+        char_lengths:           Optional precomputed character lengths aligned
+                                with ``texts``.
 
     Returns:
         A ``DynaBatchSampler`` instance.
@@ -379,6 +429,9 @@ def dynabatch_sampler(
         dynamic_batch_mode,
         smooth_batches,
         smooth_batches_max_diff,
+        token_lengths,
+        word_lengths,
+        char_lengths,
     )
     return sampler
 
@@ -400,6 +453,9 @@ def build_dynabatch_dataloader(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    token_lengths: list[int] | None = None,
+    word_lengths: list[int] | None = None,
+    char_lengths: list[int] | None = None,
     **tokenizer_kwargs: Any,
 ) -> DataLoader:
     """
@@ -427,6 +483,9 @@ def build_dynabatch_dataloader(
         dynamic_batch_mode,
         smooth_batches,
         smooth_batches_max_diff,
+        token_lengths,
+        word_lengths,
+        char_lengths,
     )
 
     dataset = TextDataset(truncated_texts)

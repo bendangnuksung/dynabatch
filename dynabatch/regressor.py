@@ -28,6 +28,7 @@ except ImportError:
 
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "regressor.ubj")
 _regressor: xgb.XGBRegressor | None = None
+_feature_names: list[str] | None = None
 
 # ---------------------------------------------------------------------------
 # Feature schema — single source of truth for what the model expects
@@ -125,12 +126,55 @@ def _build_candidate_features(
     char_lengths: np.ndarray,
     candidate_batch_sizes: np.ndarray,
 ) -> dict[str, list]:
+    def _stats_for_candidates(arr: np.ndarray, stats: list[str]) -> dict[str, list[float]]:
+        candidate_sizes = np.asarray(candidate_batch_sizes, dtype=np.int64)
+        effective_sizes = np.minimum(candidate_sizes, len(arr))
+        batch_indices = np.maximum(effective_sizes - 1, 0)
+        values: dict[str, list[float]] = {}
+
+        if not stats:
+            return values
+
+        arr_float = arr.astype(np.float64, copy=False)
+        cumsum = np.cumsum(arr_float)
+
+        if "sum" in stats:
+            values["sum"] = cumsum[batch_indices].tolist()
+        if "mean" in stats:
+            values["mean"] = (cumsum[batch_indices] / effective_sizes).tolist()
+        if "max" in stats:
+            cummax = np.maximum.accumulate(arr_float)
+            values["max"] = cummax[batch_indices].tolist()
+        if "std" in stats:
+            cumsum_sq = np.cumsum(np.square(arr_float))
+            means = cumsum[batch_indices] / effective_sizes
+            means_sq = cumsum_sq[batch_indices] / effective_sizes
+            variance = np.maximum(means_sq - np.square(means), 0.0)
+            values["std"] = np.sqrt(variance).tolist()
+
+        for stat in stats:
+            if stat in values:
+                continue
+            values[stat] = [_stat_value(arr[:bs], stat) for bs in candidate_batch_sizes]
+
+        return values
+
     arrays = {"token": token_lengths, "word": word_lengths, "char": char_lengths}
     features: dict[str, list] = {"batch_size_y": list(candidate_batch_sizes)}
     for prefix, arr in arrays.items():
-        for stat in _CANDIDATE_STATS.get(prefix, []):
-            features[f"{prefix}_{stat}_y"] = [_stat_value(arr[:bs], stat) for bs in candidate_batch_sizes]
+        stats = _CANDIDATE_STATS.get(prefix, [])
+        stat_values = _stats_for_candidates(arr, stats)
+        for stat in stats:
+            features[f"{prefix}_{stat}_y"] = stat_values[stat]
     return features
+
+
+@cache
+def get_regressor_feature_names() -> list[str]:
+    global _feature_names
+    if _feature_names is None:
+        _feature_names = list(get_regressor().get_booster().feature_names)
+    return _feature_names
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +211,7 @@ def select_optimal_batch_size(
     feature_df["word_sum_diff"] = feature_df["word_sum_y"] / feature_df["word_sum_x"]
     feature_df["char_sum_diff"] = feature_df["char_sum_y"] / feature_df["char_sum_x"]
 
-    selected = feature_df[regressor.get_booster().feature_names]
+    selected = feature_df[get_regressor_feature_names()]
     preds_raw = regressor.predict(selected)
     preds = (preds_raw <= threshold).astype(int)
     optimal = int(np.max(preds * candidate_batch_sizes))
