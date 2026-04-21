@@ -73,7 +73,7 @@ for i, batch in enumerate(loader):
     print(f"Batch No: {i} \t|\t Batch size: {len(batch["input_ids"])}")
 ```
 
-Or use **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_token_length=256)`** for a built-in loader.
+Or use **`build_dynabatch_dataloader(texts, tokenizer, batch_size=1, max_input_token_length=64)`** for a built-in loader.
 
 ## 📒Notebooks 
 [All Notebooks](./notebooks/)
