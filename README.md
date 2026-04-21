@@ -8,7 +8,7 @@
 
 It is mainly built and tested for encoder-decoder machine translation style workloads, where input length is a decent proxy for output length and memory usage.
 
-**Throughput:** In example [Notebooks](#📒notebooks), **inference generate()** on a T4 was **~1.06–1.21×** vs max-token sampling alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed-batch training. The reason is simple: long examples force a conservative fixed batch size, which leaves memory headroom and compute underused on later shorter examples; dynabatch recovers part of that headroom. **Illustrative only.**
+**Throughput:** In example [Notebooks](#notebooks), **inference generate()** on a T4 was **~1.06–1.21×** vs max-token sampling alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed-batch training. The reason is simple: long examples force a conservative fixed batch size, which leaves memory headroom and compute underused on later shorter examples; dynabatch recovers part of that headroom. **Illustrative only.**
 
 ## 📥  Installation
 
