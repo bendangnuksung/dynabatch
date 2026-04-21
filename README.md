@@ -1,18 +1,22 @@
 # dynabatch
+[![PyPI version](https://img.shields.io/pypi/v/dynabatch.svg)](https://pypi.org/project/dynabatch/)
+[![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://pypi.org/project/dynabatch/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://github.com/bendangnuksung/dynabatch/actions/workflows/test.yml/badge.svg)](https://github.com/bendangnuksung/dynabatch/actions/workflows/test.yml)
 
 `dynabatch` is a drop-in batching utility for variable-length text generation workloads. It first does **Max Token Sampler/Batching** by sorting inputs by length, then adds a pre-trained **regressor** on top to increase batch size on shorter examples while keeping memory pressure relative to the first, hardest batch.
 
 It is mainly built and tested for encoder-decoder machine translation style workloads, where input length is a decent proxy for output length and memory usage.
 
-**Throughput:** Example [Notebooks](#notebooks) runs: **inference generate()** on a T4 was **~1.06–1.21×** vs the max-token sampler alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed batch long examples cap batch size, so a fixed batch leaves memory headroom and compute underused on shorter sequences; dynabatch recovers some of that. **Illustrative only.**
+**Throughput:** Example [Notebooks](#📒notebooks) runs: **inference generate()** on a T4 was **~1.06–1.21×** vs the max-token sampler alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed batch long examples cap batch size, so a fixed batch leaves memory headroom and compute underused on shorter sequences; dynabatch recovers some of that. **Illustrative only.**
 
-## Installation
+## 📥  Installation
 
 ```bash
 pip install dynabatch
 ```
 
-## When dynabatch helps
+## ⚡ When dynabatch helps
 
 dynabatch is most useful when:
 
@@ -35,7 +39,7 @@ It is less useful when the GPU is already compute-bound even at the smallest saf
 
 If both behave similarly, dynabatch is probably not your bottleneck.
 
-## Quick Start
+## ▶️ Quick Start
 
 `dynabatch_sampler` is a **batch sampler**: use `DataLoader(..., batch_sampler=sampler)` (omit `batch_size`). Align `dataset` with `texts` and tokenizer max length with `max_input_token_length`. See `notebooks/dynabatch_inference_comparison.ipynb` for a full cell.
 
@@ -49,7 +53,7 @@ loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
 
 Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_token_length=256)`** for a built-in loader.
 
-## Notebooks 
+## 📒Notebooks 
 [All Notebooks](./notebooks/)
 
 <table>
@@ -93,7 +97,7 @@ Or **`build_dynabatch_dataloader(texts, tokenizer, batch_size=32, max_input_toke
 </table>
 
 
-## More Examples
+## ➕ More Examples
 
 ### Compare dynamic vs static batching
 ```python
@@ -256,25 +260,8 @@ trainer = DynabatchSeq2SeqTrainer(
 )
 ```
 
-## How It Works
 
-1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
-2. Samples are sorted by token length from longest to shortest. This part alone is essentially Max Token Sampler/Batching.
-3. The first batch uses exactly `batch_size` items. This is the hardest batch and becomes the baseline.
-4. For every later batch, dynabatch builds candidate batch sizes from `batch_size` up to `batch_size * max_batch_range`.
-5. A pre-trained `XGBRegressor` predicts memory pressure for each candidate relative to the first batch.
-6. dynabatch chooses the largest candidate whose predicted load is less than or equal to `threshold`.
-7. If `dynamic_batch_mode=False`, step 5 and step 6 are skipped and the pipeline reduces to Max Token Sampler/Batching with fixed batch size.
-
-The important intuition is:
-
-- around `1.0` means "about as memory heavy as the first batch"
-- below `1.0` means lighter than the first batch
-- above `1.0` means heavier than the first batch and therefore riskier
-
-So you should choose `batch_size` as the largest batch of your longest inputs that safely fits on your GPU. The regressor then tries to grow from there when the later inputs get shorter.
-
-## API
+## ⚙️  API
 
 ### `dynabatch_sampler`
 
@@ -372,6 +359,26 @@ class DynabatchTrainerMixin
 - `make_dynabatch_trainer`: builds a cached subclass combining `DynabatchTrainerMixin` with your trainer class.
 - `DynabatchTrainerMixin`: overrides train dataloader + loss reweighting for variable micro-batch sizes, and adds optional OOM fallback in `training_step`.
 - `scale_lr_for_dynabatch`: standalone helper mainly for fair fixed-vs-dynabatch comparisons; keep it off for normal training unless you explicitly want step-count-based LR adjustment.
+
+
+## 🛠️ How It Works
+
+1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
+2. Samples are sorted by token length from longest to shortest. This part alone is essentially Max Token Sampler/Batching.
+3. The first batch uses exactly `batch_size` items. This is the hardest batch and becomes the baseline.
+4. For every later batch, dynabatch builds candidate batch sizes from `batch_size` up to `batch_size * max_batch_range`.
+5. A pre-trained `XGBRegressor` predicts memory pressure for each candidate relative to the first batch.
+6. dynabatch chooses the largest candidate whose predicted load is less than or equal to `threshold`.
+7. If `dynamic_batch_mode=False`, step 5 and step 6 are skipped and the pipeline reduces to Max Token Sampler/Batching with fixed batch size.
+
+The important intuition is:
+
+- around `1.0` means "about as memory heavy as the first batch"
+- below `1.0` means lighter than the first batch
+- above `1.0` means heavier than the first batch and therefore riskier
+
+So you should choose `batch_size` as the largest batch of your longest inputs that safely fits on your GPU. The regressor then tries to grow from there when the later inputs get shorter.
+
 
 ## Regressor Training
 
