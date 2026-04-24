@@ -58,6 +58,8 @@ class _SentencePieceFallbackTokenizer:
         if return_offsets_mapping:
             raise ValueError("offset mapping unavailable for this tokenizer")
 
+        self._last_batch_words = [list(tokens) for tokens in tokenized]
+
         input_ids = [[101] + [i + 1000 for i, _ in enumerate(tokens)] + [102] for tokens in tokenized]
         attention_masks = [[1] * len(ids) for ids in input_ids]
 
@@ -79,6 +81,35 @@ class _SentencePieceFallbackTokenizer:
 
     def get_special_tokens_mask(self, token_ids, already_has_special_tokens=True):
         return [1 if token_id in (101, 102) else 0 for token_id in token_ids]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+        **kwargs,
+    ) -> str:
+        return self.batch_decode(
+            [token_ids],
+            skip_special_tokens=skip_special_tokens,
+            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+            **kwargs,
+        )[0]
+
+    def batch_decode(
+        self,
+        sequences: list[list[int]],
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+        **kwargs,
+    ) -> list[str]:
+        words_batch = getattr(self, "_last_batch_words", None)
+        if words_batch is None or len(words_batch) != len(sequences):
+            return ["" for _ in sequences]
+        out: list[str] = []
+        for words in words_batch:
+            out.append(" ".join(words))
+        return out
 
 
 class _SingleOnlyOffsetTokenizer:
@@ -144,6 +175,14 @@ class _NoExactOffsetTokenizer:
             "input_ids": [[i + 1 for i, _ in enumerate(tokens)] for tokens in tokenized],
             "attention_mask": [[1] * len(tokens) for tokens in tokenized],
         }
+
+    def batch_decode(self, *args, **kwargs):
+        raise RuntimeError(
+            "Unable to compute exact char_lengths/word_lengths without offset mapping or a reliable decode."
+        )
+
+    def decode(self, token_ids, **kwargs):
+        return self.batch_decode([token_ids], **kwargs)
 
 
 # ---------------------------------------------------------------------------

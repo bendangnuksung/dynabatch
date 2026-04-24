@@ -68,6 +68,9 @@ class MockTokenizer:
         if truncation and max_length is not None:
             tokenized = [t[:max_length] for t in tokenized]
 
+        # Used by ``batch_decode`` in the decode-based length path (same process as ``__call__``).
+        self._last_batch_words = [list(row) for row in tokenized]
+
         # Map each word to a stable integer ID (1-1000, 0 reserved for padding)
         token_ids = [[hash(w) % 1000 + 1 for w in tokens] for tokens in tokenized]
 
@@ -107,6 +110,33 @@ class MockTokenizer:
 
         return result
 
+    def decode(
+        self,
+        token_ids: list[int],
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+        **kwargs,
+    ) -> str:
+        return self.batch_decode(
+            [token_ids],
+            skip_special_tokens=skip_special_tokens,
+            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+            **kwargs,
+        )[0]
+
+    def batch_decode(
+        self,
+        sequences: list[list[int]],
+        skip_special_tokens: bool = True,
+        clean_up_tokenization_spaces: bool = False,
+        **kwargs,
+    ) -> list[str]:
+        words_batch = getattr(self, "_last_batch_words", None)
+        if words_batch is not None and len(words_batch) == len(sequences):
+            return [" ".join(words) for words in words_batch]
+        # Best-effort when ``__call__`` did not set the scratch buffer (e.g. tests that only decode).
+        return ["" for _ in sequences]
+
 
 class WordTokenizer(MockTokenizer):
     def __call__(
@@ -120,7 +150,13 @@ class WordTokenizer(MockTokenizer):
         return_offsets_mapping=False,
         **kwargs,
     ):
-        tokenized = [t.split() for t in text]
+        if text is None and "texts" in kwargs:
+            text = kwargs.pop("texts")
+        if text is None:
+            raise TypeError("WordTokenizer.__call__() missing required argument: 'text'")
+        texts_list = [text] if isinstance(text, str) else list(text)
+        tokenized = [t.split() for t in texts_list]
+        self._last_batch_words = [list(row) for row in tokenized]
         token_ids = [[hash(w) % 1000 + 1 for w in tokens] for tokens in tokenized]
         r = {
             "input_ids": token_ids,
@@ -129,7 +165,7 @@ class WordTokenizer(MockTokenizer):
 
         if return_offsets_mapping:
             all_offsets = []
-            for original_text, words in zip(text, tokenized):
+            for original_text, words in zip(texts_list, tokenized):
                 offsets = []
                 pos = 0
                 for word in words:
