@@ -382,7 +382,7 @@ So you should choose `batch_size` as the largest batch of your longest inputs th
 
 ## Regressor Training
 
-The training pipeline and notebook notes now live in `train_regressor/readme.md`.
+The detailed training pipeline and notebook notes live in `train_regressor/readme.md`. That document explains how the GPU-memory data is generated, how the `XGBRegressor` training rows are built, and the current caveat that new `v2`-style generation is NLLB-only for now; existing `v1` ALMA/Marian data is still usable but not fully reproducible from the current notebook config.
 
 In short:
 
