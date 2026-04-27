@@ -281,7 +281,7 @@ def dynabatch_sampler(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
+    threshold: float = 0.9,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
@@ -312,7 +312,7 @@ def dynabatch_sampler(
            first batch**. The prediction scale is centred around ``1.0``, meaning
            "same memory pressure as the first batch"; values above ``1.0`` signal
            higher pressure and OOM risk. The sampler picks the **largest** candidate
-           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.65``
+           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.9``
            leaves a margin below the ``1.0`` reference point.
 
         The regressor was trained on empirical data: actual GPU memory usage
@@ -404,7 +404,7 @@ def build_dynabatch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
+    threshold: float = 0.9,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,

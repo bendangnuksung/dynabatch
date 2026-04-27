@@ -1,6 +1,6 @@
 import os
 
-__version__ = "0.2.22"
+__version__ = "0.2.23"
 
 
 def set_cuda_alloc_conf():
