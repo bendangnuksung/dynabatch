@@ -235,6 +235,7 @@ def _build_dynabatch_sampler_and_texts(
     dynamic_batch_mode: bool,
     smooth_batches: bool,
     smooth_batches_max_diff: float,
+    save_input_features: bool = False,
     token_lengths: list[int] | None = None,
     word_lengths: list[int] | None = None,
     char_lengths: list[int] | None = None,
@@ -270,6 +271,7 @@ def _build_dynabatch_sampler_and_texts(
         smooth_batches_max_diff=smooth_batches_max_diff,
         keep_batch_size_even=keep_batch_size_even,
         debug=debug,
+        save_input_features=save_input_features,
     )
     return sampler, truncated_texts, num_workers
 
@@ -279,7 +281,7 @@ def dynabatch_sampler(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
+    threshold: float = 0.9,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
@@ -291,6 +293,7 @@ def dynabatch_sampler(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    save_input_features: bool = False,
     token_lengths: list[int] | None = None,
     word_lengths: list[int] | None = None,
     char_lengths: list[int] | None = None,
@@ -309,7 +312,7 @@ def dynabatch_sampler(
            first batch**. The prediction scale is centred around ``1.0``, meaning
            "same memory pressure as the first batch"; values above ``1.0`` signal
            higher pressure and OOM risk. The sampler picks the **largest** candidate
-           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.65``
+           whose prediction is ≤ ``threshold``. The default ``threshold`` of ``0.9``
            leaves a margin below the ``1.0`` reference point.
 
         The regressor was trained on empirical data: actual GPU memory usage
@@ -358,6 +361,7 @@ def dynabatch_sampler(
                                 For example, ``0.2`` allows at most ``0.2 * batch_size``
                                 additional items per step (still capped by
                                 ``max_batch_range``/sampler max size).
+        save_input_features:    If True, save the input features to a file. (Purely for debugging purposes)
         token_lengths:          Optional precomputed token lengths aligned with
                                 ``texts``. When provided together with
                                 ``word_lengths`` and ``char_lengths``,
@@ -387,6 +391,7 @@ def dynabatch_sampler(
         dynamic_batch_mode,
         smooth_batches,
         smooth_batches_max_diff,
+        save_input_features,
         token_lengths,
         word_lengths,
         char_lengths,
@@ -399,7 +404,7 @@ def build_dynabatch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
+    threshold: float = 0.9,
     max_batch_range: float = 2.0,
     shuffle: bool = False,
     shuffle_seed: int = 21,
@@ -411,6 +416,7 @@ def build_dynabatch_dataloader(
     dynamic_batch_mode: bool = True,
     smooth_batches: bool = True,
     smooth_batches_max_diff: float = 0.2,
+    save_input_features: bool = False,
     token_lengths: list[int] | None = None,
     word_lengths: list[int] | None = None,
     char_lengths: list[int] | None = None,
@@ -441,6 +447,7 @@ def build_dynabatch_dataloader(
         dynamic_batch_mode,
         smooth_batches,
         smooth_batches_max_diff,
+        save_input_features,
         token_lengths,
         word_lengths,
         char_lengths,

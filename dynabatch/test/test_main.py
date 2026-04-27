@@ -338,18 +338,18 @@ def _call_select_optimal(
 
 
 def test_select_optimal_batch_size_returns_int():
-    result = _call_select_optimal()
+    result, _ = _call_select_optimal()
     assert isinstance(result, int)
 
 
 def test_select_optimal_batch_size_bounded():
-    result = _call_select_optimal()
+    result, _ = _call_select_optimal()
     assert 1 <= result <= int(max(_CANDIDATE_BATCH_SIZES))
 
 
 def test_select_optimal_batch_size_fallback_to_baseline():
     """With threshold=-1.0 no candidate passes; returns baseline batch size."""
-    result = _call_select_optimal(threshold=-1.0)
+    result, _ = _call_select_optimal(threshold=-1.0)
     assert result == _BASELINE_BS
 
 
