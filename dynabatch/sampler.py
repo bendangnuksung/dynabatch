@@ -69,6 +69,7 @@ class DynaBatchSampler(Sampler[list[int]]):
         smooth_batches: bool = True,
         smooth_batches_max_diff: float = 0.2,
         debug: bool = False,
+        save_input_features: bool = False,
     ):
         self._rng = random.Random(shuffle_seed)
         sorted_indices = sorted(
@@ -96,6 +97,8 @@ class DynaBatchSampler(Sampler[list[int]]):
             int((self.batch_end_range - self.batch_start_range) * _CANDIDATE_STEPS_PER_UNIT),
         )
 
+        self.save_input_features = save_input_features
+        self.input_features = []
         self.batches = self._build_batches(sorted_indices, token_lengths, word_lengths, char_lengths)
 
     def _get_safe_smooth_batch_max_diff(self) -> int:
@@ -272,7 +275,7 @@ class DynaBatchSampler(Sampler[list[int]]):
         with tqdm(total=len(sorted_token_lengths), desc="Step 2: building dynamic batches", unit="seq") as pbar:
             pbar.update(self.min_batch_size)
             while len(remaining_token):
-                optimal_size = select_optimal_batch_size(
+                optimal_size, feature_df = select_optimal_batch_size(
                     token_lengths=remaining_token,
                     word_lengths=remaining_word,
                     char_lengths=remaining_char,
@@ -280,6 +283,9 @@ class DynaBatchSampler(Sampler[list[int]]):
                     threshold=self.threshold,
                     candidate_batch_sizes=candidate_batch_sizes,
                 )
+
+                if self.save_input_features:
+                    self.input_features.append(feature_df)
 
                 if len(remaining_token) <= optimal_size:
                     optimal_size = len(remaining_token)

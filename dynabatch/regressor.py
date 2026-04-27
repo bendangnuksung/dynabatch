@@ -215,4 +215,4 @@ def select_optimal_batch_size(
     preds_raw = regressor.predict(selected)
     preds = (preds_raw <= threshold).astype(int)
     optimal = int(np.max(preds * candidate_batch_sizes))
-    return optimal if optimal > 0 else int(baseline_features["batch_size_x"][0])
+    return optimal if optimal > 0 else int(baseline_features["batch_size_x"][0]), feature_df
