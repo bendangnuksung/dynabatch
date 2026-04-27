@@ -67,6 +67,28 @@ def _compute_char_len_from_offsets(offsets: list[tuple[int, int]]) -> int:
     return max((end for _, end in offsets if end != 0), default=0)
 
 
+def _batch_decode_cached_specials(input_ids: list[list[int]], tokenizer: PreTrainedTokenizerBase) -> list[str]:
+    convert_ids_to_tokens = getattr(tokenizer, "convert_ids_to_tokens", None)
+    convert_tokens_to_string = getattr(tokenizer, "convert_tokens_to_string", None)
+    if not callable(convert_ids_to_tokens) or not callable(convert_tokens_to_string):
+        return tokenizer.batch_decode(
+            input_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
+    special_ids = set(getattr(tokenizer, "all_special_ids", ()))
+    decoded_texts: list[str] = []
+    append_decoded_text = decoded_texts.append
+
+    for ids in input_ids:
+        filtered_ids = [token_id for token_id in ids if token_id not in special_ids]
+        tokens = convert_ids_to_tokens(filtered_ids, skip_special_tokens=False)
+        append_decoded_text(convert_tokens_to_string(tokens))
+
+    return decoded_texts
+
+
 def _process_chunk_hf_offsets(
     chunk: list[str], tokenizer: PreTrainedTokenizerBase, max_length: int
 ) -> tuple[list[int], list[int], list[int], list[str]]:
@@ -96,26 +118,28 @@ def _process_chunk_decode(
     )
     input_ids = encoded["input_ids"]
     token_lengths = [len(ids) for ids in input_ids]
+    decoded_texts = _batch_decode_cached_specials(input_ids, tokenizer)
 
-    decoded_texts = tokenizer.batch_decode(
-        input_ids,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )
-
+    word_lengths: list[int] = []
     chopped_char_lengths: list[int] = []
     chopped_texts: list[str] = []
 
-    for original, decoded in zip(chunk, decoded_texts):
-        if len(decoded) >= len(original):
-            chopped_char_lengths.append(len(original))
-            chopped_texts.append(original)
-        else:
-            char_len = _align_decoded_to_original(original, decoded)
-            chopped_char_lengths.append(char_len)
-            chopped_texts.append(original[:char_len])
+    append_word_length = word_lengths.append
+    append_char_length = chopped_char_lengths.append
+    append_text = chopped_texts.append
 
-    word_lengths = [len(t.split()) for t in chopped_texts]
+    for original, decoded in zip(chunk, decoded_texts):
+        if len(decoded) < len(original):
+            char_len = _align_decoded_to_original(original, decoded)
+            text = original[:char_len]
+        else:
+            char_len = len(original)
+            text = original
+
+        append_word_length(len(text.split()))
+        append_char_length(char_len)
+        append_text(text)
+
     return token_lengths, word_lengths, chopped_char_lengths, chopped_texts
 
 
