@@ -9,7 +9,7 @@
 Long inputs force small safe batches. Later, shorter inputs could often fit more examples, but most loaders keep using the same conservative batch size. `dynabatch` grows those later batches automatically.
 
 <p align="center">
-  <img src="images/dynabatch_diagram.svg" alt="dynabatch grows batch size as sequences get shorter" width="900">
+  <img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/refs/heads/main/images/dynabatch_diagram.svg" alt="dynabatch grows batch size as sequences get shorter" width="900">
 </p>
 
 `dynabatch` is a drop-in PyTorch batch sampler for variable-length text workloads. It starts with max-token-style length sorting, then uses a pre-trained regressor to increase batch size on easier, shorter batches while keeping predicted memory pressure below the first, hardest batch.
@@ -65,13 +65,13 @@ These are workload-specific results, not a universal speedup claim. `dynabatch` 
 
 1. [Inference `generate()`](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)
 <p align="center">
-  <img src="images/inference_generate_comparitive_analysis_graph.png" alt="Inference generate comparison graph" width="720">
+  <img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/refs/heads/main/images/inference_generate_comparitive_analysis_graph.png" alt="Inference generate comparison graph" width="720">
 </p>
 
 
 2. [Seq2Seq training](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb)
 <p align="center">
-  <img src="images/training_comparison.png" alt="Training comparison chart" width="720">
+  <img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/refs/heads/main/images/training_comparison.png" alt="Training comparison chart" width="720">
 </p>
 
 ## Should You Use It?
@@ -90,6 +90,17 @@ Probably skip it if:
 - input length is a poor proxy for generation cost
 
 To sanity-check your workload, compare `dynamic_batch_mode=True` against `dynamic_batch_mode=False`. If both behave similarly, batching is probably not your bottleneck.
+
+## Tuning For More Throughput
+
+Start with the largest `batch_size` that safely fits your longest inputs. That first hard batch becomes the baseline budget; the dynamic settings control how aggressively later, shorter batches can grow.
+
+| Parameter | Current | Increase or change it when | Risk OOM |
+|---|---|---|---|
+| `max_batch_range` | 2.0 | Shorter examples could fit much larger batches than your baseline. | Can pick overly aggressive batch sizes if set too high. |
+| `threshold` | 0.9 | You want dynabatch to accept batches closer to the first-batch memory budget. | Higher OOM risk if the regressor underestimates memory. |
+
+Also check `nvidia-smi` if more batches could fit in.
 
 ## ➕ More Examples
 
