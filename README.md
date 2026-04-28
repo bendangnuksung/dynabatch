@@ -4,44 +4,25 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://github.com/bendangnuksung/dynabatch/actions/workflows/test.yml/badge.svg)](https://github.com/bendangnuksung/dynabatch/actions/workflows/test.yml)
 
-`dynabatch` is a drop-in batching utility for variable-length text generation workloads. It first does **Max Token Sampler/Batching** by sorting inputs by length, then adds a pre-trained **regressor** on top to increase batch size on shorter examples while keeping memory pressure relative to the first, hardest batch.
+**Use more of your GPU on variable-length text generation.**
 
-It is mainly built and tested for encoder-decoder machine translation style workloads, where input length is a decent proxy for output length and memory usage.
+Long inputs force small safe batches. Later, shorter inputs could often fit more examples, but most loaders keep using the same conservative batch size. `dynabatch` grows those later batches automatically.
 
-**Throughput:** In example [Notebooks](#notebooks), **inference generate()** on a T4 was **~1.06–1.21×** vs max-token sampling alone (three models). **Training** on an RTX 5090 was **~3×** vs fixed-batch training. The reason is simple: long examples force a conservative fixed batch size, which leaves memory headroom and compute underused on later shorter examples; dynabatch recovers part of that headroom. **Illustrative only.**
+<p align="center">
+  <img src="images/dynabatch_diagram.svg" alt="dynabatch grows batch size as sequences get shorter" width="900">
+</p>
 
-## 📥  Installation
+`dynabatch` is a drop-in PyTorch batch sampler for variable-length text workloads. It starts with max-token-style length sorting, then uses a pre-trained regressor to increase batch size on easier, shorter batches while keeping predicted memory pressure below the first, hardest batch.
+
+## Quick Start
+
+Install:
 
 ```bash
 pip install dynabatch
 ```
 
-## ⚡ When dynabatch helps
-
-dynabatch is most useful when:
-
-- long examples force you to choose a conservative fixed batch size
-- that conservative batch size leaves GPU compute underutilized on the many shorter examples later in the dataset
-- your task has a reasonably predictable relation between input length and generation cost
-
-It is generally a better fit for **encoder-decoder** models than for decoder-only LLMs. For decoder-only training or inference, sequence packing is often the stronger optimization because it reduces padding waste by filling token slots directly inside packed sequences. dynabatch can still help on decoder-only workloads in some cases, but it is not where I would position the library first.
-
-This is the common translation scenario:
-
-- a few very long inputs force a small safe batch size because they eat a lot of VRAM
-- once those hard batches are out of the way, later shorter batches could fit many more examples
-- increasing batch size there improves throughput and reduces wasted padding
-
-It is less useful when the GPU is already compute-bound even at the smallest safe batch size. In that case, making the batch larger does not buy much. If you want to check that, compare:
-
-- `dynamic_batch_mode=True`
-- `dynamic_batch_mode=False`
-
-If both behave similarly, dynabatch is probably not your bottleneck.
-
-## ▶️ Quick Start
-
-`dynabatch_sampler` is a **batch sampler**: use `DataLoader(..., batch_sampler=sampler)` (omit `batch_size`). The snippet below is copy-paste runnable.
+Use it as a `DataLoader` batch sampler. Omit `batch_size` from `DataLoader`; the sampler controls batch sizes.
 
 ```python
 from datasets import Dataset
@@ -70,19 +51,47 @@ sampler = dynabatch_sampler(texts, tokenizer, batch_size=1, max_input_token_leng
 loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
 
 for i, batch in enumerate(loader):
-    print(f"Batch No: {i} \t|\t Batch size: {len(batch["input_ids"])}")
+    print(f"Batch No: {i} | Batch size: {len(batch['input_ids'])}")
 ```
 
-Or use **`build_dynabatch_dataloader(texts, tokenizer, batch_size=1, max_input_token_length=64)`** for a built-in loader.
+Or use `build_dynabatch_dataloader(texts, tokenizer, batch_size=1, max_input_token_length=64)` for a built-in loader.
 
-## 📒Notebooks 
-[All Notebooks](./notebooks/)
+## Results
 
-| Notebook | Comparison | Notes/Observations |
-|---|---|---|
-| **Inference**<br>[🟠🟡 Colab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb) | <img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/ed4c58a0deb2f03ec7d21aede1af2a9ce91cabbd/images/inference_generate_comparitive_analysis_table.png" alt="Inference comparison table" width="800"> | - Ran on Colab **T4**<br>- **~1.06×–1.21×** vs max-token sampler alone across three models (small gains)<br>- Bigger wins on heavy models (for example NLLB, Qwen): high memory use means smaller static batches, so dynamic batching helps more<br>- Faster GPUs at the same VRAM may see bigger gains than on a T4 |
-| **Training**<br>[Notebook](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb) | <img src="https://raw.githubusercontent.com/bendangnuksung/dynabatch/ed4c58a0deb2f03ec7d21aede1af2a9ce91cabbd/images/training_comparison.png" alt="Training comparison chart" width="800"> | - Ran on **RTX 5090**<br>- Roughly **3×** higher throughput vs standard Seq2Seq training with a fixed batch size<br>- Compares Hugging Face **Seq2SeqTrainer** (static batching) to **Dynabatch Trainer**<br>- Mostly **memory-bound** with a fixed batch: long examples force a small batch, so much of GPU compute sits idle on shorter sequences; dynabatch grows batches there<br>- Dynabatch can sometimes overestimate batch size and trigger OOM; the notebook shows OOM fallback that splits and retries smaller chunks |
+These are workload-specific results, not a universal speedup claim. `dynabatch` helps most when variable sequence lengths leave memory headroom unused.
 
+| Workload | Hardware | Baseline | dynabatch | Notebook | Notes |
+|---|---:|---|---:|---|---:|
+| Inference `generate()` | Colab T4 | max-token sampler | **1.06×-1.21×** | [inference Colab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb) | Marginal speed increase cause T4 is compute bounded
+| Seq2Seq training | RTX 5090 | fixed batch | **3.3×** | [training notebook](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb) | Big speed increase cause 5090 is memory bounded
+
+1. [Inference `generate()`](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)
+<p align="center">
+  <img src="images/inference_generate_comparitive_analysis_graph.png" alt="Inference generate comparison graph" width="720">
+</p>
+
+
+2. [Seq2Seq training](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb)
+<p align="center">
+  <img src="images/training_comparison.png" alt="Training comparison chart" width="720">
+</p>
+
+## Should You Use It?
+
+Use `dynabatch` if:
+
+- you run encoder-decoder generation or training, especially translation-style workloads
+- input lengths vary a lot
+- a few long examples force a small safe batch size
+- shorter examples later in the dataset leave GPU memory or compute underused
+
+Probably skip it if:
+
+- you are using decoder-only LLMs where sequence packing is the better first optimization
+- your workload is already compute-bound at the smallest safe batch size
+- input length is a poor proxy for generation cost
+
+To sanity-check your workload, compare `dynamic_batch_mode=True` against `dynamic_batch_mode=False`. If both behave similarly, batching is probably not your bottleneck.
 
 ## ➕ More Examples
 
@@ -248,11 +257,11 @@ trainer = DynabatchSeq2SeqTrainer(
 ```
 
 
-## ⚙️  API
+## API
 
 ### `dynabatch_sampler`
 
-Returns `DynaBatchSampler` for `DataLoader(..., batch_sampler=sampler)`. Same sizing/shuffle kwargs as `build_dynabatch_dataloader`; `dataset` indices must match `texts`.
+Returns a `DynaBatchSampler` for `DataLoader(..., batch_sampler=sampler)`. The dataset indices must match `texts`.
 
 ```python
 dynabatch_sampler(
@@ -260,27 +269,13 @@ dynabatch_sampler(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
-    max_batch_range: float = 2.0,
-    shuffle: bool = False,
-    shuffle_seed: int = 21,
-    shuffle_keep_first_n: int = 3,
-    friendly_batch_size: bool = False,
-    keep_batch_size_even: bool = True,
-    num_workers: int = 4,
-    debug: bool = False,
-    dynamic_batch_mode: bool = True,
-    smooth_batches: bool = True,
-    smooth_batches_max_diff: float = 0.2,
-    token_lengths: list[int] | None = None,
-    word_lengths: list[int] | None = None,
-    char_lengths: list[int] | None = None,
+    **kwargs,
 ) -> DynaBatchSampler
 ```
 
 ### `build_dynabatch_dataloader`
 
-Same batching as `dynabatch_sampler`, returns a `DataLoader` with built-in collation; extra kwargs go to the tokenizer.
+Same batching as `dynabatch_sampler`, but returns a `DataLoader` with built-in tokenizer collation.
 
 ```python
 build_dynabatch_dataloader(
@@ -288,47 +283,21 @@ build_dynabatch_dataloader(
     tokenizer: PreTrainedTokenizerBase,
     batch_size: int,
     max_input_token_length: int = 512,
-    threshold: float = 0.65,
-    max_batch_range: float = 2.0,
-    shuffle: bool = False,
-    shuffle_seed: int = 21,
-    shuffle_keep_first_n: int = 3,
-    friendly_batch_size: bool = False,
-    keep_batch_size_even: bool = True,
-    num_workers: int = 4,
-    debug: bool = False,
-    dynamic_batch_mode: bool = True,
-    smooth_batches: bool = True,
-    smooth_batches_max_diff: float = 0.2,
-    token_lengths: list[int] | None = None,
-    word_lengths: list[int] | None = None,
-    char_lengths: list[int] | None = None,
     **tokenizer_kwargs,
 ) -> DataLoader
 ```
 
-| Parameter | Description |
-|---|---|
-| `texts` | Raw input strings. |
-| `tokenizer` | Any tokenizer compatible with the Hugging Face tokenizer interface. |
-| `batch_size` | The baseline batch size for the first, longest batch. In practice, set this to the largest safe batch size for your worst-case inputs. |
-| `max_input_token_length` | Hard truncation limit used while estimating lengths and later tokenizing the batches. |
-| `threshold` | Maximum allowed regressor prediction for a candidate batch. Roughly, `1.0` means "as memory-heavy as the first batch". Lower values are more conservative. |
-| `max_batch_range` | Upper multiplier for candidate batch sizes relative to `batch_size`. With `batch_size=32` and `max_batch_range=2.0`, dynabatch will search up to about `64`. |
-| `shuffle` | Shuffles the already-built batches. Within a batch, lengths stay similar. This is batch-level shuffling, not full random token-level mixing. |
-| `shuffle_seed` | Seed used when shuffling. |
-| `shuffle_keep_first_n` | Keeps the first few hardest batches in original order before shuffling the rest. For example, `3` means the first 3 longest/hardest batches remain fixed so you can detect early OOM issues quickly. |
-| `friendly_batch_size` | Rounds chosen batch sizes down to hardware-friendly values such as powers of two or `3 * 2^n`. Useful for some training setups. |
-| `keep_batch_size_even` | If `True`, rounds chosen batch sizes to even numbers. Enabled by default and useful for setups that prefer even per-step microbatch sizes. |
-| `num_workers` | Worker count for the length pre-pass (`datasets.map`) and for the returned `DataLoader`. |
-| `debug` | Disables parallel workers for the length pass and enables verbose sampler logging. |
-| `dynamic_batch_mode` | If `True`, uses the regressor to vary batch size. If `False`, the loader reduces to Max Token Sampler/Batching with fixed batch size. This is the main switch for testing whether the dynamic part is actually helping your workload. |
-| `smooth_batches` | If `True`, applies a smoothing pass after dynamic sizing so adjacent batches do not jump too abruptly in size. |
-| `smooth_batches_max_diff` | Controls the largest allowed growth between adjacent batches as a fraction of `batch_size`. Example: `0.2` allows at most `0.2 * batch_size` extra items per step (still bounded by max batch size). |
-| `token_lengths`, `word_lengths`, `char_lengths` | Optional precomputed lengths aligned with `texts`. Provide all three to skip the upfront `compute_lengths` tokenization pass. |
-| `**tokenizer_kwargs` | Extra keyword arguments forwarded to the tokenizer during collation (for example `truncation=True`). |
+Common options:
 
-The returned `DataLoader` yields dictionaries containing `input_ids`, `attention_mask`, `texts`, and any other tokenizer outputs.
+| Option | Why you might change it |
+|---|---|
+| `batch_size` | Set this to the largest safe batch size for your longest inputs. |
+| `threshold` | Lower it for more conservative dynamic growth; `1.0` means roughly as memory-heavy as the first batch. |
+| `max_batch_range` | Caps how much larger later batches can get relative to `batch_size`. |
+| `dynamic_batch_mode` | Turn off to compare against max-token batching without regressor-driven resizing. |
+| `shuffle` / `shuffle_keep_first_n` | Shuffle built batches while keeping the first hardest batches fixed for early OOM detection. |
+| `friendly_batch_size` | Round chosen batch sizes to hardware-friendly values like powers of two. |
+| `token_lengths`, `word_lengths`, `char_lengths` | Provide precomputed lengths to skip the upfront length pass. |
 
 ### Trainer helpers
 
@@ -348,20 +317,7 @@ class DynabatchTrainerMixin
 - `scale_lr_for_dynabatch`: standalone helper mainly for fair fixed-vs-dynabatch comparisons; keep it off for normal training unless you explicitly want step-count-based LR adjustment.
 
 
-## 🛠️ How It Works
-
-```text
-Static batching (fixed size chosen for longest examples)
-  Long seqs   -> [####....] [####....] [####....]
-  Short seqs  -> [##......] [##......] [##......]
-                 ^ lots of padded / underused slots
-
-dynabatch (grow batch as sequences get shorter)
-  Long seqs   -> [####....]
-  Medium seqs -> [###.....] [###.....]
-  Short seqs  -> [##......] [##......] [##......] [##......]
-                 ^ denser utilization across the epoch
-```
+## How It Works
 
 1. All texts are tokenized up front to estimate truncated token, word, and character lengths.
 2. Samples are sorted by token length from longest to shortest. This part alone is essentially Max Token Sampler/Batching.
