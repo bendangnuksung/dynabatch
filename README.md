@@ -31,14 +31,12 @@ from transformers import AutoTokenizer
 from dynabatch import dynabatch_sampler
 
 texts = [
-    "Hello world!",
-    "This is a slightly longer example sentence for batching.",
-    "Short one",
-    "A much longer sentence is useful to create variable sequence lengths for testing dynabatch quickly.",
-    "A much longer sentence is useful to create variable sequence lengths for testing dynabatch quickly, A much longer sentence is useful to create variable sequence lengths for testing dynabatch quickly",
-    "Another medium-length sample.",
-    "Tiny",
-]
+    "Very Short text " * 1,
+    "Short text " * 2,
+    "Medium text " * 8,
+    "Long text " * 32,
+    "Very long text " * 64,
+] * 3
 
 dataset = Dataset.from_dict({"text": texts})
 tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
@@ -47,7 +45,7 @@ def collate_fn(batch):
     batch_texts = [x["text"] for x in batch]
     return tokenizer(batch_texts, padding=True, truncation=True, return_tensors="pt")
 
-sampler = dynabatch_sampler(texts, tokenizer, batch_size=1, max_input_token_length=64)
+sampler = dynabatch_sampler(texts, tokenizer, batch_size=3, max_input_token_length=128, keep_batch_size_even=False)
 loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
 
 for i, batch in enumerate(loader):
