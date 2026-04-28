@@ -62,8 +62,8 @@ These are workload-specific results, not a universal speedup claim. `dynabatch` 
 
 | Workload | Hardware | Baseline | dynabatch | Notebook | Notes |
 |---|---:|---|---:|---|---:|
-| Inference `generate()` | Colab T4 | max-token sampler | **1.06×-1.21×** | [inference Colab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb) | Marginal speed increase cause T4 is compute bounded
-| Seq2Seq training | RTX 5090 | fixed batch | **3.3×** | [training notebook](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb) | Big speed increase cause 5090 is memory bounded
+| Inference `generate()` | Colab T4 | max-token sampler | **1.06×-1.21×** | [inference Colab](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb) | Smaller gain: T4 has less compute headroom, so larger batches help less |
+| Seq2Seq training | RTX 5090 | fixed batch | **3.3×** | [training notebook](https://github.com/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_training_comparison.ipynb) | Larger gain: the 5090 has much more compute headroom, so growing shorter batches improves utilization |
 
 1. [Inference `generate()`](https://colab.research.google.com/github/bendangnuksung/dynabatch/blob/main/notebooks/dynabatch_inference_comparison.ipynb)
 <p align="center">
